@@ -2,9 +2,21 @@
   Generates bash tags for a selected plugin automatically.
   Tag names aligned with Wrye Bash _tag_aliases / patcher tags; FO4 parity with WB FO4 patchers.
 
-  Games:  FO3/FNV/FO4/TES4/TES4R/TES5/SSE/Enderal/EnderalSE
-  Author: fireundubh <fireundubh@gmail.com> (maintained)
-  Hotkey: F12
+  Games:    FO3/FNV/FO4/TES4/TES4R/TES5/SSE/Enderal/EnderalSE
+  Requires: xEdit 4.1.4 or newer (script aborts on older builds)
+  Author:   fireundubh <fireundubh@gmail.com> (maintained)
+  Hotkey:   F12
+
+  Heuristic Force* tags (opt-in checkbox; off by default):
+    - Actors.SpellsForceAdd       : override Spells is a strict superset of master Spells AND Actors.Spells already suggested.
+    - Actors.AIPackagesForceAdd   : override Packages is a strict superset of master Packages AND Actors.AIPackages already suggested.
+    - NpcFacesForceFullImport     : NPC differs from master in eyes (ENAM), hair (HNAM), AND face geometry simultaneously.
+  These heuristics may produce false positives on plugins that intentionally only add entries; review before committing.
+
+  Oblivion RACE Spells split (replaces v1.0 single-tag emission):
+    - removes present (master has SPEL not in override)  -> R.ChangeSpells (full override required to apply removal)
+    - adds-only                                          -> R.AddSpells    (additive merge sufficient; preserves other mods' adds)
+    - identical sets                                     -> nothing
 }
 
 
@@ -15,7 +27,8 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator';
-  ScriptVersion = '1.7.1.0';
+  ScriptVersion = '1.8.0.0';
+  MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Original: fireundubh; Multifile: Xideta';
   ScriptEmail   = 'xideta@gmail.com (Or for original parts: fireundubh@gmail.com)';
   ScaleFactor   = Screen.PixelsPerInch / 96;
@@ -37,6 +50,7 @@ Var
   g_AddFile        : boolean;
   g_LogTests              : boolean;
   g_ShowTagRelationships  : boolean;
+  g_HeuristicForceTags    : boolean;
 
 Function wbIsOblivion: boolean;
 Begin
@@ -264,6 +278,7 @@ Begin
   g_AddFile  := False;
   g_LogTests             := True;
   g_ShowTagRelationships := False;
+  g_HeuristicForceTags   := False;
 
   slLog := TStringList.Create;
   slLog.Sorted     := False;
@@ -298,6 +313,15 @@ Begin
 
   // Wish I didn't have to make a new list for this, but script errors on AssignFile
   slOutToFileTags := TStringList.Create;
+
+  If wbVersionNumber < MinXEditVer Then
+    Begin
+      LogWarn(Format('This script requires xEdit 4.1.4 or newer. Detected wbVersionNumber = $%s.',
+                     [IntToHex(wbVersionNumber, 8)]));
+      LogError('Cannot proceed because xEdit version is older than 4.1.4.');
+      Result := 4;
+      Exit;
+    End;
 
   If ShowPrompt(ScriptName + ' v' + ScriptVersion) = mrAbort Then
     Begin
@@ -586,7 +610,7 @@ Begin
 
       Else If sSignature = 'RACE' Then
              Begin
-               ProcessTag('R.ChangeSpells', e, o);
+               ProcessRaceSpells(e, o);
                ProcessTag('R.Attributes-F', e, o);
                ProcessTag('R.Attributes-M', e, o);
              End
@@ -1059,6 +1083,9 @@ Begin
       If wbIsSkyrim And ContainsStr('ALCH AMMO APPA ARMO AVIF BOOK CLAS LSCR MESG MGEF SCRL SHOU SPEL WEAP', sSignature) Then
         ProcessTag(g_Tag, e, o);
     End;
+
+  // Heuristic Force* tags (opt-in; runs after all other detection so it can read TagExists state).
+  ProcessForceTagHeuristics(e, o);
 End;
 
 
@@ -2224,7 +2251,7 @@ Begin
   Else If (g_Tag = 'Outfits.Remove') Then
          EvaluateByPathRemove(e, m, 'OTFT')
 
-         // Bookmark: R.AddSpells - DEFER: R.ChangeSpells
+         // Bookmark: R.AddSpells / R.ChangeSpells handled by ProcessRaceSpells (list-diff split)
 
          // Bookmark: R.Attributes-F
   Else If (g_Tag = 'R.Attributes-F') Then
@@ -2576,8 +2603,216 @@ Begin
          Result := 'a flag value differs from the master'
   Else If SameText(ATestName, 'CompareFlags:OR') Then
          Result := 'a flag is set on the override or master (OR rule)'
+  Else If SameText(ATestName, 'RaceSpells:AddOnly') Then
+         Result := 'override Spells adds new SPELs and removes none (additive merge)'
+  Else If SameText(ATestName, 'RaceSpells:Removes') Then
+         Result := 'override Spells removes SPELs the master had (full override required)'
+  Else If SameText(ATestName, 'Heuristic:ForceAddSuperset') Then
+         Result := 'heuristic: override list is a strict superset of master (no removals); WB ForceAdd may apply'
+  Else If SameText(ATestName, 'Heuristic:FullFaceDiff') Then
+         Result := 'heuristic: NPC eyes, hair, and face geometry all differ from master; WB full face import may apply'
   Else
     Result := 'detection rule fired (' + ATestName + ')';
+End;
+
+
+// Collect the EditValue (FormID hex) of each child entry in an array element into sl (sorted, unique).
+Procedure CollectArrayEntryIDs(AArray: IwbElement; sl: TStringList);
+
+Var 
+  i      : integer;
+  kEntry : IwbElement;
+  s      : string;
+Begin
+  If Not Assigned(AArray) Then
+    Exit;
+  For i := 0 To Pred(ElementCount(AArray)) Do
+    Begin
+      kEntry := ElementByIndex(AArray, i);
+      s := Trim(GetEditValue(kEntry));
+      If s <> '' Then
+        sl.Add(s);
+    End;
+End;
+
+
+// Set diff: items in A not in B
+Function CountSetMinus(A: TStringList; B: TStringList): integer;
+
+Var 
+  i, n : integer;
+Begin
+  n := 0;
+  For i := 0 To Pred(A.Count) Do
+    If B.IndexOf(A[i]) = -1 Then
+      Inc(n);
+  Result := n;
+End;
+
+
+// Oblivion RACE Spells split (replaces single R.ChangeSpells emission).
+//   removes > 0  -> R.ChangeSpells  (full override needed to drop SPELs)
+//   adds-only    -> R.AddSpells     (additive merge sufficient)
+//   identical    -> nothing
+// Preserves v1.0 detection coverage; improves accuracy in the adds-only case.
+Procedure ProcessRaceSpells(ARecord: IwbMainRecord; AMaster: IwbMainRecord);
+
+Var 
+  kSpells, kSpellsMaster : IwbElement;
+  slOver, slMast         : TStringList;
+  iAdds, iRemoves        : integer;
+Begin
+  If TagExists('R.AddSpells') And TagExists('R.ChangeSpells') Then
+    Exit;
+
+  kSpells       := ElementByPath(ARecord, 'Spells');
+  kSpellsMaster := ElementByPath(AMaster,  'Spells');
+
+  // Both missing: nothing to suggest. Either-side missing: defer to general path-based check below.
+  If Not Assigned(kSpells) And Not Assigned(kSpellsMaster) Then
+    Exit;
+
+  slOver := TStringList.Create;
+  slMast := TStringList.Create;
+  Try
+    slOver.Sorted := True;  slOver.Duplicates := dupIgnore;  slOver.CaseSensitive := False;
+    slMast.Sorted := True;  slMast.Duplicates := dupIgnore;  slMast.CaseSensitive := False;
+
+    CollectArrayEntryIDs(kSpells,       slOver);
+    CollectArrayEntryIDs(kSpellsMaster, slMast);
+
+    iAdds    := CountSetMinus(slOver, slMast);
+    iRemoves := CountSetMinus(slMast, slOver);
+
+    If iRemoves > 0 Then
+      Begin
+        g_Tag := 'R.ChangeSpells';
+        If Not TagExists(g_Tag) Then
+          Begin
+            AddLogEntry('RaceSpells:Removes', kSpells, kSpellsMaster);
+            slSuggestedTags.Add(g_Tag);
+          End;
+      End
+    Else If iAdds > 0 Then
+           Begin
+             g_Tag := 'R.AddSpells';
+             If Not TagExists(g_Tag) Then
+               Begin
+                 AddLogEntry('RaceSpells:AddOnly', kSpells, kSpellsMaster);
+                 slSuggestedTags.Add(g_Tag);
+               End;
+           End;
+  Finally
+    slOver.Free;
+    slMast.Free;
+  End;
+End;
+
+
+// Opt-in heuristic: suggest WB Force* variants when simple diff patterns fire.
+// Documented false positives; gated by g_HeuristicForceTags.
+Procedure ProcessForceTagHeuristics(ARecord: IwbMainRecord; AMaster: IwbMainRecord);
+
+Var 
+  sSig                       : string;
+  kArr, kArrMaster           : IwbElement;
+  slOver, slMast             : TStringList;
+  iAdds, iRemoves            : integer;
+  bSpells, bAI               : boolean;
+  bEyes, bHair, bFace        : boolean;
+  kE, kEM, kH, kHM, kF, kFM  : IwbElement;
+Begin
+  If Not g_HeuristicForceTags Then
+    Exit;
+
+  sSig := Signature(ARecord);
+
+  // Actors.SpellsForceAdd: superset on Spells (or FO4 Actor Effects), only if Actors.Spells already suggested.
+  bSpells := (sSig = 'CREA') Or (sSig = 'NPC_');
+  If bSpells And TagExists('Actors.Spells') And Not TagExists('Actors.SpellsForceAdd') Then
+    Begin
+      If wbIsFallout4 Then
+        Begin
+          kArr       := ElementByPath(ARecord, 'Actor Effects');
+          kArrMaster := ElementByPath(AMaster,  'Actor Effects');
+        End
+      Else
+        Begin
+          kArr       := ElementByPath(ARecord, 'Spells');
+          kArrMaster := ElementByPath(AMaster,  'Spells');
+        End;
+
+      slOver := TStringList.Create;
+      slMast := TStringList.Create;
+      Try
+        slOver.Sorted := True;  slOver.Duplicates := dupIgnore;  slOver.CaseSensitive := False;
+        slMast.Sorted := True;  slMast.Duplicates := dupIgnore;  slMast.CaseSensitive := False;
+        CollectArrayEntryIDs(kArr,       slOver);
+        CollectArrayEntryIDs(kArrMaster, slMast);
+        iAdds    := CountSetMinus(slOver, slMast);
+        iRemoves := CountSetMinus(slMast, slOver);
+        If (iAdds > 0) And (iRemoves = 0) Then
+          Begin
+            g_Tag := 'Actors.SpellsForceAdd';
+            AddLogEntry('Heuristic:ForceAddSuperset', kArr, kArrMaster);
+            slSuggestedTags.Add(g_Tag);
+          End;
+      Finally
+        slOver.Free;
+        slMast.Free;
+      End;
+    End;
+
+  // Actors.AIPackagesForceAdd: superset on Packages, only if Actors.AIPackages already suggested.
+  bAI := (sSig = 'CREA') Or (sSig = 'NPC_');
+  If bAI And TagExists('Actors.AIPackages') And Not TagExists('Actors.AIPackagesForceAdd') Then
+    Begin
+      kArr       := ElementByPath(ARecord, 'Packages');
+      kArrMaster := ElementByPath(AMaster,  'Packages');
+
+      slOver := TStringList.Create;
+      slMast := TStringList.Create;
+      Try
+        slOver.Sorted := True;  slOver.Duplicates := dupIgnore;  slOver.CaseSensitive := False;
+        slMast.Sorted := True;  slMast.Duplicates := dupIgnore;  slMast.CaseSensitive := False;
+        CollectArrayEntryIDs(kArr,       slOver);
+        CollectArrayEntryIDs(kArrMaster, slMast);
+        iAdds    := CountSetMinus(slOver, slMast);
+        iRemoves := CountSetMinus(slMast, slOver);
+        If (iAdds > 0) And (iRemoves = 0) Then
+          Begin
+            g_Tag := 'Actors.AIPackagesForceAdd';
+            AddLogEntry('Heuristic:ForceAddSuperset', kArr, kArrMaster);
+            slSuggestedTags.Add(g_Tag);
+          End;
+      Finally
+        slOver.Free;
+        slMast.Free;
+      End;
+    End;
+
+  // NpcFacesForceFullImport: NPC_ on non-FO4, all of eyes (ENAM), hair (HNAM),
+  // and face geometry (FaceGen Data) differ from master simultaneously.
+  If (sSig = 'NPC_') And Not wbIsFallout4 And Not TagExists('NpcFacesForceFullImport') Then
+    Begin
+      kE  := ElementBySignature(ARecord, 'ENAM');
+      kEM := ElementBySignature(AMaster, 'ENAM');
+      kH  := ElementBySignature(ARecord, 'HNAM');
+      kHM := ElementBySignature(AMaster, 'HNAM');
+      kF  := ElementByPath(ARecord, 'FaceGen Data');
+      kFM := ElementByPath(AMaster,  'FaceGen Data');
+
+      bEyes := Assigned(kE) And Assigned(kEM) And (GetNativeValue(kE) <> GetNativeValue(kEM));
+      bHair := Assigned(kH) And Assigned(kHM) And (GetNativeValue(kH) <> GetNativeValue(kHM));
+      bFace := Assigned(kF) And Assigned(kFM) And Not SameText(EditValues(kF), EditValues(kFM));
+
+      If bEyes And bHair And bFace Then
+        Begin
+          g_Tag := 'NpcFacesForceFullImport';
+          AddLogEntry('Heuristic:FullFaceDiff', kF, kFM);
+          slSuggestedTags.Add(g_Tag);
+        End;
+    End;
 End;
 
 
@@ -2668,17 +2903,24 @@ Begin
 End;
 
 
+Procedure chkHeuristicForceTagsClick(Sender: TObject);
+Begin
+  g_HeuristicForceTags := Sender.Checked;
+End;
+
+
 Function ShowPrompt(ACaption: String): integer;
 
 Var 
-  frm             : TForm;
-  chkAddTags      : TCheckBox;
-  chkAddFile      : TCheckBox;
-  chkLogging      : TCheckBox;
-  chkTagRelations : TCheckBox;
-  btnCancel       : TButton;
-  btnOk           : TButton;
-  i               : integer;
+  frm                : TForm;
+  chkAddTags         : TCheckBox;
+  chkAddFile         : TCheckBox;
+  chkLogging         : TCheckBox;
+  chkTagRelations    : TCheckBox;
+  chkHeuristicForce  : TCheckBox;
+  btnCancel          : TButton;
+  btnOk              : TButton;
+  i                  : integer;
 Begin
   Result := mrCancel;
 
@@ -2687,8 +2929,8 @@ Begin
   Try
     frm.Caption      := ACaption;
     frm.BorderStyle  := bsToolWindow;
-    frm.ClientWidth  := 234 * ScaleFactor;
-    frm.ClientHeight := 184 * ScaleFactor;
+    frm.ClientWidth  := 260 * ScaleFactor;
+    frm.ClientHeight := 211 * ScaleFactor;
     frm.Position     := poScreenCenter;
     frm.KeyPreview   := True;
     frm.OnKeyDown    := EscKeyHandler;
@@ -2741,10 +2983,22 @@ Begin
     chkTagRelations.OnClick  := chkTagRelationshipsClick;
     chkTagRelations.TabOrder := 2;
 
+    chkHeuristicForce := TCheckBox.Create(frm);
+    chkHeuristicForce.Parent   := frm;
+    chkHeuristicForce.Left     := 16 * ScaleFactor;
+    chkHeuristicForce.Top      := 108 * ScaleFactor;
+    chkHeuristicForce.Width    := 240 * ScaleFactor;
+    chkHeuristicForce.Height   := 16 * ScaleFactor;
+    chkHeuristicForce.Caption  := 'Suggest heuristic Force* tags (may produce false positives)';
+    chkHeuristicForce.Checked  := False;
+    g_HeuristicForceTags := chkHeuristicForce.Checked;
+    chkHeuristicForce.OnClick  := chkHeuristicForceTagsClick;
+    chkHeuristicForce.TabOrder := 3;
+
     btnOk := TButton.Create(frm);
     btnOk.Parent              := frm;
     btnOk.Left                := 62 * ScaleFactor;
-    btnOk.Top                 := 146 * ScaleFactor;
+    btnOk.Top                 := 173 * ScaleFactor;
     btnOk.Width               := 75 * ScaleFactor;
     btnOk.Height              := 25 * ScaleFactor;
     btnOk.Caption             := 'Run';
@@ -2755,7 +3009,7 @@ Begin
     btnCancel := TButton.Create(frm);
     btnCancel.Parent          := frm;
     btnCancel.Left            := 143 * ScaleFactor;
-    btnCancel.Top             := 146 * ScaleFactor;
+    btnCancel.Top             := 173 * ScaleFactor;
     btnCancel.Width           := 75 * ScaleFactor;
     btnCancel.Height          := 25 * ScaleFactor;
     btnCancel.Caption         := 'Abort';
