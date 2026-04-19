@@ -2,7 +2,7 @@
 
 xEdit Pascal script that generates [Wrye Bash](https://github.com/wrye-bash/wrye-bash) bash tags for a selected plugin by diffing the plugin's records against their masters and emitting the tag names that match Wrye Bash's patcher rules. Fork of fireundubh's `WryeBashTagGenerator` (multifile variant by Xideta).
 
-> **No support.** This script is provided as an example. There is no warranty, no support, no bug-tracker SLA, no upgrade promises. Use at your own risk; review suggested tags before writing them to your plugin's header. **Do not contact the original authors of `WryeBashTagGenerator` (fireundubh, Xideta) about this fork** — they did not write it and have no obligation to help with it.
+> **No support.** This script is provided as an example. There is no warranty, no support, no bug-tracker SLA, no upgrade promises. Use at your own risk; review suggested tags before writing them to your plugin's header. The upstream authors of `WryeBashTagGenerator` (fireundubh, Xideta) did not write this fork and should not be contacted about it; see Credits below for proper citation.
 
 ## Supported games
 
@@ -87,9 +87,18 @@ This preserves v1.0 detection coverage and improves accuracy in the adds-only ca
 
 ## Credits
 
-- **fireundubh** — original `WryeBashTagGenerator` script.
-- **Xideta** — multifile variant.
-- `-NG` fork: **Beermotor**. Provided as-is, no support. **Do not contact the upstream authors for support, bugs, or feature requests on this fork** — they did not write it and are not responsible for it.
+Original authors (please cite when referencing this script's lineage):
+
+- **fireundubh** — author of `WryeBashTagGenerator`, the upstream xEdit Pascal script this fork is derived from.
+- **Xideta** — author of the multifile variant of `WryeBashTagGenerator` that served as the immediate base for this fork.
+
+`-NG` fork:
+
+- **Beermotor** — maintainer of `WryeBashTagGenerator-NG`. Provided as-is with no support. Direct all bug reports and feature requests for the `-NG` fork at this repository, not at the upstream authors above.
+
+Suggested citation:
+
+> Beermotor, _WryeBashTagGenerator-NG_ (xEdit Pascal script), forked from fireundubh's _WryeBashTagGenerator_ (multifile variant by Xideta).
 
 ## License
 

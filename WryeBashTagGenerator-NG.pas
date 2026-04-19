@@ -4,11 +4,16 @@
 
   Games:    FO3/FNV/FO4/TES4/TES4R/TES5/SSE/Enderal/EnderalSE
   Requires: xEdit 4.1.4 or newer (script aborts on older builds)
-  Author:   Beermotor (-NG fork). NO SUPPORT - provided as an example.
   Hotkey:   F12
 
-  Do NOT contact upstream authors of WryeBashTagGenerator about this fork;
-  they did not write it and are not responsible for its behavior.
+  Lineage / citation:
+    - Original WryeBashTagGenerator: fireundubh.
+    - Multifile WryeBashTagGenerator variant: Xideta.
+    - WryeBashTagGenerator-NG (this fork): Beermotor.
+
+  NO SUPPORT - provided as an example. Do NOT contact fireundubh or Xideta
+  about this fork; they did not write it and are not responsible for its
+  behavior.
 
   Heuristic Force* tags (opt-in checkbox; off by default):
     - Actors.SpellsForceAdd       : override Spells is a strict superset of master Spells AND Actors.Spells already suggested.
