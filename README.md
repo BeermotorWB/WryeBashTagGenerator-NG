@@ -2,7 +2,7 @@
 
 xEdit Pascal script that generates [Wrye Bash](https://github.com/wrye-bash/wrye-bash) bash tags for a selected plugin by diffing the plugin's records against their masters and emitting the tag names that match Wrye Bash's patcher rules. Fork of fireundubh's `WryeBashTagGenerator` (multifile variant by Xideta).
 
-> **No support.** This script is provided as an example. There is no warranty, no support, no bug-tracker SLA, no upgrade promises. Use at your own risk; review suggested tags before writing them to your plugin's header.
+> **No support.** This script is provided as an example. There is no warranty, no support, no bug-tracker SLA, no upgrade promises. Use at your own risk; review suggested tags before writing them to your plugin's header. **Do not contact the original authors of `WryeBashTagGenerator` (fireundubh, Xideta) about this fork** — they did not write it and have no obligation to help with it.
 
 ## Supported games
 
@@ -89,7 +89,7 @@ This preserves v1.0 detection coverage and improves accuracy in the adds-only ca
 
 - **fireundubh** — original `WryeBashTagGenerator` script.
 - **Xideta** — multifile variant.
-- `-NG` fork: see `ScriptAuthor` constant in the script. Provided as-is, no support.
+- `-NG` fork: **Beermotor**. Provided as-is, no support. **Do not contact the upstream authors for support, bugs, or feature requests on this fork** — they did not write it and are not responsible for it.
 
 ## License
 
