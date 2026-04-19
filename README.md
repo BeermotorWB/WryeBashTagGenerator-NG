@@ -1,6 +1,8 @@
-# WryeBashTagGenerator
+# WryeBashTagGenerator-NG
 
-xEdit Pascal script that generates [Wrye Bash](https://github.com/wrye-bash/wrye-bash) bash tags for a selected plugin by diffing the plugin's records against their masters and emitting the tag names that match Wrye Bash's patcher rules. Maintained fork of fireundubh's original (multifile variant by Xideta).
+xEdit Pascal script that generates [Wrye Bash](https://github.com/wrye-bash/wrye-bash) bash tags for a selected plugin by diffing the plugin's records against their masters and emitting the tag names that match Wrye Bash's patcher rules. Fork of fireundubh's `WryeBashTagGenerator` (multifile variant by Xideta).
+
+> **No support.** This script is provided as an example. There is no warranty, no support, no bug-tracker SLA, no upgrade promises. Use at your own risk; review suggested tags before writing them to your plugin's header.
 
 ## Supported games
 
@@ -14,13 +16,13 @@ Fallout 76 is explicitly **unsupported** (CBash limitation).
 
 ## Install
 
-Copy `WryeBashTagGenerator.pas` into your xEdit `Edit Scripts` folder.
+Copy `WryeBashTagGenerator-NG.pas` into your xEdit `Edit Scripts` folder.
 
 ## Run
 
 1. Launch xEdit (`SSEEdit.exe`, `FO4Edit.exe`, etc.) and load your plugin set.
 2. Right-click the plugin you want to tag → **Apply Script**.
-3. Pick `WryeBashTagGenerator` and confirm.
+3. Pick `WryeBashTagGenerator-NG` and confirm.
 4. Hotkey: **F12** runs the script after the first manual selection.
 
 ## Options dialog
@@ -87,7 +89,7 @@ This preserves v1.0 detection coverage and improves accuracy in the adds-only ca
 
 - **fireundubh** — original `WryeBashTagGenerator` script.
 - **Xideta** — multifile variant.
-- Current maintainer: see `ScriptAuthor` constant in the script.
+- `-NG` fork: see `ScriptAuthor` constant in the script. Provided as-is, no support.
 
 ## License
 

@@ -20,13 +20,13 @@
 }
 
 
-Unit WryeBashTagGenerator;
+Unit WryeBashTagGeneratorNG;
 
 Uses 
   Dialogs;
 
 Const 
-  ScriptName    = 'WryeBashTagGenerator';
+  ScriptName    = 'WryeBashTagGenerator-NG';
   ScriptVersion = '1.8.0.0';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Original: fireundubh; Multifile: Xideta';
