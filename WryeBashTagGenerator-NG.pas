@@ -282,10 +282,10 @@ Begin
   LogInfo(DataPath);
 
 
-  g_AddTags  := True;
+  g_AddTags  := False;
   g_AddFile  := False;
   g_LogTests             := True;
-  g_ShowTagRelationships := False;
+  g_ShowTagRelationships := True;
   g_HeuristicForceTags   := False;
 
   slLog := TStringList.Create;
@@ -473,6 +473,13 @@ Begin
         StringListDifference(slScanResults, slExistingTags, slDifferentTags);
         slBadTags.Clear;
         StringListDifference(slExistingTags, slScanResults, slBadTags);
+
+        // Deprecated tags are reported separately under "deprecated tags found:";
+        // they are not "bad" (the user just hasn't migrated yet), so strip them out.
+        If slDepFound.Count > 0 Then
+          For i := Pred(slBadTags.Count) DownTo 0 Do
+            If slDepFound.IndexOf(slBadTags[i]) <> -1 Then
+              slBadTags.Delete(i);
 
         If (slScanResults.Count = 0) And (slDepFound.Count = 0) And TagsCommaTextEqual(slFinalTags, slNormExist) And Not g_AddFile Then
           Begin
@@ -663,6 +670,12 @@ Begin
                g_Tag := 'NPC.AIPackageOverrides';
                If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use AI Packages', False, False) Then
                  ProcessTag('NPC.AIPackageOverrides', e, o);
+
+               // Skyrim/SSE Actors.Spells — skip if the NPC inherits its spell list
+               // from a template (modifying SPLO directly would be ignored by the engine).
+               g_Tag := 'Actors.Spells';
+               If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Spell List', False, False) Then
+                 ProcessTag('Actors.Spells', e, o);
 
                ProcessTag('NPC.AttackRace', e, o);
                ProcessTag('NPC.CrimeFaction', e, o);
@@ -1691,8 +1704,10 @@ Begin
          EvaluateByPathAdd(e, m, 'Perks')
 
          // Bookmark: NPC.Perks.Change
+         // Match entries on Perk; only fire if a shared perk's Rank differs.
+         // Adds/removes go to NPC.Perks.Add / NPC.Perks.Remove.
   Else If (g_Tag = 'NPC.Perks.Change') Then
-         EvaluateByPathChange(e, m, 'Perks')
+         DiffSubrecordList(e, m, 'NPC.Perks.Change', 'Perks', 'Perk', 'Rank')
 
          // Bookmark: NPC.Perks.Remove
   Else If (g_Tag = 'NPC.Perks.Remove') Then
@@ -2173,9 +2188,15 @@ Begin
   Else If (g_Tag = 'Invent.Add') Then
          EvaluateByPathAdd(e, m, 'Items')
 
-         // Bookmark: Invent.Change - TEST
+         // Bookmark: Invent.Change
+         // Match entries on CNTO\Item; only fire if a shared item's count or extra data
+         // (COED — owner/condition/health, FO3+ only) differs. Pure adds/removes are
+         // handled by Invent.Add/Invent.Remove and must not pollute Invent.Change.
   Else If (g_Tag = 'Invent.Change') Then
-         EvaluateByPathChange(e, m, 'Items')
+         If wbIsOblivion Or wbIsOblivionR Then
+           DiffSubrecordList(e, m, 'Invent.Change', 'Items', 'CNTO\Item', 'CNTO\Count')
+         Else
+           DiffSubrecordList(e, m, 'Invent.Change', 'Items', 'CNTO\Item', 'CNTO\Count|COED')
 
          // Bookmark: Invent.Remove
   Else If (g_Tag = 'Invent.Remove') Then
@@ -2333,9 +2354,15 @@ Begin
   Else If (g_Tag = 'R.Relations.Add') Then
          EvaluateByPathAdd(e, m, 'Relations')
 
-         // Bookmark: R.Relations.Change - TEST
+         // Bookmark: R.Relations.Change
+         // Match entries on Faction; only fire if a shared faction's Modifier or
+         // (Skyrim/FO4) Group Combat Reaction differs. Adds/removes go to
+         // R.Relations.Add / R.Relations.Remove.
   Else If (g_Tag = 'R.Relations.Change') Then
-         EvaluateByPathChange(e, m, 'Relations')
+         If wbIsSkyrim Or wbIsFallout4 Then
+           DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier|Group Combat Reaction')
+         Else
+           DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier')
 
          // Bookmark: R.Relations.Remove
   Else If (g_Tag = 'R.Relations.Remove') Then
@@ -2371,9 +2398,15 @@ Begin
   Else If (g_Tag = 'Relations.Add') Then
          EvaluateByPathAdd(e, m, 'Relations')
 
-         // Bookmark: Relations.Change - TEST
+         // Bookmark: Relations.Change
+         // Match entries on Faction; only fire if a shared faction's Modifier or
+         // (Skyrim/FO4) Group Combat Reaction differs. Adds/removes go to
+         // Relations.Add / Relations.Remove.
   Else If (g_Tag = 'Relations.Change') Then
-         EvaluateByPathChange(e, m, 'Relations')
+         If wbIsSkyrim Or wbIsFallout4 Then
+           DiffSubrecordList(e, m, 'Relations.Change', 'Relations', 'Faction', 'Modifier|Group Combat Reaction')
+         Else
+           DiffSubrecordList(e, m, 'Relations.Change', 'Relations', 'Faction', 'Modifier')
 
          // Bookmark: Relations.Remove
   Else If (g_Tag = 'Relations.Remove') Then
@@ -2605,6 +2638,8 @@ Begin
          Result := 'the displayed field value differs from the master'
   Else If SameText(ATestName, 'CompareKeys') Then
          Result := 'sorted key contents differ from the master'
+  Else If SameText(ATestName, 'SubrecordChange') Then
+         Result := 'a list entry the master also has was modified (same reference, different data)'
   Else If SameText(ATestName, 'CompareNativeValues') Then
          Result := 'raw binary/native field values differ from the master'
   Else If SameText(ATestName, 'CompareFlags:NOT') Then
@@ -2713,6 +2748,96 @@ Begin
   Finally
     slOver.Free;
     slMast.Free;
+  End;
+End;
+
+
+// Per-entry change diff for sorted/keyed sub-record lists (Items, Relations, etc.).
+// Emits ATagName iff at least one entry whose key (ARefPath) is present in BOTH master
+// and override has differing data on any of ADataPathsDelim (pipe-separated paths).
+//
+// Entries that exist only in override (Add) or only in master (Remove) are intentionally
+// ignored here — those are handled by *.Add and *.Remove tags. This is the fix for the
+// historical false positive where CompareKeys on the whole array would fire whenever
+// items were added or removed, regardless of whether any shared entry actually changed.
+Procedure DiffSubrecordList(ARec: IInterface; AMaster: IInterface;
+                             Const ATagName: String; Const AArrayName: String;
+                             Const ARefPath: String; Const ADataPathsDelim: String);
+
+Var 
+  kArr, kArrM         : IwbElement;
+  kEntry, kMatch      : IwbElement;
+  kSubA, kSubB        : IwbElement;
+  slDataPaths         : TStringList;
+  i, j, k             : integer;
+  sRef, sRefM         : string;
+  sData, sDataM       : string;
+Begin
+  If TagExists(ATagName) Then
+    Exit;
+
+  kArr  := ElementByName(ARec,    AArrayName);
+  kArrM := ElementByName(AMaster, AArrayName);
+  If Not Assigned(kArr) Or Not Assigned(kArrM) Then
+    Exit;
+  If (ElementCount(kArr) = 0) Or (ElementCount(kArrM) = 0) Then
+    Exit;
+
+  slDataPaths := TStringList.Create;
+  Try
+    slDataPaths.Delimiter     := '|';
+    slDataPaths.StrictDelimiter := True;
+    slDataPaths.DelimitedText := ADataPathsDelim;
+
+    For i := 0 To Pred(ElementCount(kArr)) Do
+      Begin
+        kEntry := ElementByIndex(kArr, i);
+        sRef   := GetElementEditValues(kEntry, ARefPath);
+        If sRef = '' Then
+          Continue;
+
+        // Find the matching entry in master by ref (linear scan; lists are small).
+        kMatch := Nil;
+        For j := 0 To Pred(ElementCount(kArrM)) Do
+          Begin
+            sRefM := GetElementEditValues(ElementByIndex(kArrM, j), ARefPath);
+            If SameText(sRefM, sRef) Then
+              Begin
+                kMatch := ElementByIndex(kArrM, j);
+                Break;
+              End;
+          End;
+
+        // Ref only in override = Add (handled by *.Add tag); skip.
+        If Not Assigned(kMatch) Then
+          Continue;
+
+        // Compare each requested data path. First difference wins and emits the tag.
+        For k := 0 To Pred(slDataPaths.Count) Do
+          Begin
+            kSubA := ElementByPath(kEntry, slDataPaths[k]);
+            kSubB := ElementByPath(kMatch, slDataPaths[k]);
+
+            // Both missing on this path: nothing to compare.
+            If Not Assigned(kSubA) And Not Assigned(kSubB) Then
+              Continue;
+
+            sData  := '';
+            sDataM := '';
+            If Assigned(kSubA) Then sData  := EditValues(kSubA);
+            If Assigned(kSubB) Then sDataM := EditValues(kSubB);
+
+            If Not SameText(sData, sDataM) Then
+              Begin
+                g_Tag := ATagName;
+                AddLogEntry('SubrecordChange', kEntry, kMatch);
+                slSuggestedTags.Add(g_Tag);
+                Exit;
+              End;
+          End;
+      End;
+  Finally
+    slDataPaths.Free;
   End;
 End;
 
@@ -2950,7 +3075,7 @@ Begin
     chkAddTags.Width    := 185 * ScaleFactor;
     chkAddTags.Height   := 16 * ScaleFactor;
     chkAddTags.Caption  := 'Write suggested tags to header';
-    chkAddTags.Checked  := True;
+    chkAddTags.Checked  := False;
     g_AddTags := chkAddTags.Checked;
     chkAddTags.OnClick  := chkAddTagsClick;
     chkAddTags.TabOrder := 0;
@@ -2986,7 +3111,7 @@ Begin
     chkTagRelations.Width    := 210 * ScaleFactor;
     chkTagRelations.Height   := 16 * ScaleFactor;
     chkTagRelations.Caption  := 'Show Tag to Record Relationships';
-    chkTagRelations.Checked  := False;
+    chkTagRelations.Checked  := True;
     g_ShowTagRelationships := chkTagRelations.Checked;
     chkTagRelations.OnClick  := chkTagRelationshipsClick;
     chkTagRelations.TabOrder := 2;

@@ -31,10 +31,10 @@ Four checkboxes:
 
 | Checkbox | Default | Effect |
 |----------|---------|--------|
-| Write suggested tags to header | on | Rewrites the plugin description's `{{BASH:...}}` block with the merged final tag set. |
+| Write suggested tags to header | off | Rewrites the plugin description's `{{BASH:...}}` block with the merged final tag set. |
 | Write suggested tags to file | off | Also writes canonical tag names to `Data\BashTags\<plugin>.txt`. |
 | Log test results to Messages tab | on | Per-detection technical log lines (`{Tag} (TestName) [SIG:FormID] path`). |
-| Show Tag to Record Relationships | off | Plain-language `[INFO] Tag suggestion <tag> based on <reason> at [SIG:FormID] <path>` lines after the results summary. One line per detection. |
+| Show Tag to Record Relationships | on | Plain-language `[INFO] Tag suggestion <tag> based on <reason> at [SIG:FormID] <path>` lines after the results summary. One line per detection. |
 | Suggest heuristic Force* tags | off | See "Heuristic Force* tags" below. |
 
 ## Output
@@ -45,21 +45,36 @@ Four checkboxes:
 
 ## Tag canonicalization
 
-Tag names follow current Wrye Bash conventions. Aliases the script normalizes include (non-exhaustive):
+Tag names follow current Wrye Bash conventions. The script normalizes every deprecated alias below to its modern replacement(s) before writing the `{{BASH:...}}` block. This mirrors `Mopy/bash/bosh/__init__.py` `_tag_aliases` + `_removed_tags` in Wrye Bash; see `ExpandOneAliasTo` in the script for the authoritative table.
 
-- `Actors.Perks.{Add,Change,Remove}` → `NPC.Perks.{Add,Change,Remove}`
-- `Factions` → `Actors.Factions`
-- `Voice-F` / `Voice-M` → `R.Voice-F` / `R.Voice-M`
-- `Body-F` / `Body-M` → `R.Body-F` / `R.Body-M`
-- `Eyes` / `Eyes-D` / `Eyes-E` / `Eyes-R` → `R.Eyes`
-- `Hair` → `R.Hair`
-- `Invent` → `Invent.Add` + `Invent.Remove`
-- `NpcFaces` → `NPC.Eyes` + `NPC.Hair` + `NPC.FaceGen`
-- `Relations` / `R.Relations` → split into `.Add` / `.Change` / `.Remove` variants
-- `Derel` → `Relations.Remove`; `C.GridFlags` → `C.ForceHideLand`
-- `Merge`, `ScriptContents` → dropped (removed by Wrye Bash)
-
-See `ExpandOneAliasTo` in the script for the full table; mirrors `Mopy/bash/bosh/__init__.py` `_tag_aliases` + `_removed_tags` in Wrye Bash.
+| Deprecated tag (old) | Replacement tag(s) (new) |
+|----------------------|--------------------------|
+| `Actors.Perks.Add`     | `NPC.Perks.Add` |
+| `Actors.Perks.Change`  | `NPC.Perks.Change` |
+| `Actors.Perks.Remove`  | `NPC.Perks.Remove` |
+| `Body-F`               | `R.Body-F` |
+| `Body-M`               | `R.Body-M` |
+| `Body-Size-F`          | `R.Body-Size-F` |
+| `Body-Size-M`          | `R.Body-Size-M` |
+| `C.GridFlags`          | `C.ForceHideLand` |
+| `Derel`                | `Relations.Remove` |
+| `Eyes`                 | `R.Eyes` |
+| `Eyes-D`               | `R.Eyes` |
+| `Eyes-E`               | `R.Eyes` |
+| `Eyes-R`               | `R.Eyes` |
+| `Factions`             | `Actors.Factions` |
+| `Hair`                 | `R.Hair` |
+| `Invent`               | `Invent.Add`, `Invent.Remove` |
+| `InventOnly`           | `IIM`, `Invent.Add`, `Invent.Remove` |
+| `Merge`                | _(removed by Wrye Bash; dropped)_ |
+| `Npc.EyesOnly`         | `NPC.Eyes` |
+| `Npc.HairOnly`         | `NPC.Hair` |
+| `NpcFaces`             | `NPC.Eyes`, `NPC.Hair`, `NPC.FaceGen` |
+| `R.Relations`          | `R.Relations.Add`, `R.Relations.Change`, `R.Relations.Remove` |
+| `Relations`            | `Relations.Add`, `Relations.Change` |
+| `ScriptContents`       | _(removed by Wrye Bash; dropped)_ |
+| `Voice-F`              | `R.Voice-F` |
+| `Voice-M`              | `R.Voice-M` |
 
 ## Heuristic Force* tags (opt-in)
 
