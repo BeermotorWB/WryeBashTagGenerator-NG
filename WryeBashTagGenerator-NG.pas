@@ -2937,7 +2937,7 @@ Begin
   Try
     frm.Caption      := ACaption;
     frm.BorderStyle  := bsToolWindow;
-    frm.ClientWidth  := 260 * ScaleFactor;
+    frm.ClientWidth  := 360 * ScaleFactor;
     frm.ClientHeight := 211 * ScaleFactor;
     frm.Position     := poScreenCenter;
     frm.KeyPreview   := True;
@@ -2995,7 +2995,7 @@ Begin
     chkHeuristicForce.Parent   := frm;
     chkHeuristicForce.Left     := 16 * ScaleFactor;
     chkHeuristicForce.Top      := 108 * ScaleFactor;
-    chkHeuristicForce.Width    := 240 * ScaleFactor;
+    chkHeuristicForce.Width    := 336 * ScaleFactor;
     chkHeuristicForce.Height   := 16 * ScaleFactor;
     chkHeuristicForce.Caption  := 'Suggest heuristic Force* tags (may produce false positives)';
     chkHeuristicForce.Checked  := False;
@@ -3005,7 +3005,7 @@ Begin
 
     btnOk := TButton.Create(frm);
     btnOk.Parent              := frm;
-    btnOk.Left                := 62 * ScaleFactor;
+    btnOk.Left                := 102 * ScaleFactor;
     btnOk.Top                 := 173 * ScaleFactor;
     btnOk.Width               := 75 * ScaleFactor;
     btnOk.Height              := 25 * ScaleFactor;
@@ -3016,7 +3016,7 @@ Begin
 
     btnCancel := TButton.Create(frm);
     btnCancel.Parent          := frm;
-    btnCancel.Left            := 143 * ScaleFactor;
+    btnCancel.Left            := 183 * ScaleFactor;
     btnCancel.Top             := 173 * ScaleFactor;
     btnCancel.Width           := 75 * ScaleFactor;
     btnCancel.Height          := 25 * ScaleFactor;
