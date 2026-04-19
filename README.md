@@ -95,7 +95,6 @@ Original authors (please cite when referencing this script's lineage):
 `-NG` fork:
 
 - **Beermotor** — maintainer of `WryeBashTagGenerator-NG`. Provided as-is with no support.
-Suggested citation:
 
 > Beermotor, _WryeBashTagGenerator-NG_ (xEdit Pascal script), forked from fireundubh's _WryeBashTagGenerator_ (multifile variant by Xideta).
 
