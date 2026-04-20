@@ -38,7 +38,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-NG-debug';
-  ScriptVersion = '1.8.0.0-debug';
+  ScriptVersion = '1.9.1.0-debug';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor';
   ScriptEmail   = 'NO SUPPORT';
@@ -74,6 +74,12 @@ Var
   g_LogTests              : boolean;
   g_ShowTagRelationships  : boolean;
   g_HeuristicForceTags    : boolean;
+
+  // Single-plugin enforcement: lock onto the first file we see
+  g_TargetFile     : IwbFile;
+  g_TargetFileName : string;
+  g_MultiFileError : boolean;
+  g_OtherFiles     : TStringList;
 
   // ---- Debug-fork state ----------------------------------------------
   g_DebugLogPath          : string;             // resolved log file path
@@ -496,9 +502,10 @@ Begin
       End;
   End;
 
-  // Read-only enforcement: g_AddTags is forced False here, the prompt
-  // checkbox is hidden in ShowPrompt, and the only SetEditValue() call
-  // in Process() is gated behind 'If False And bWriteHeader Then'.
+  // Read-only enforcement: g_AddTags AND g_AddFile are forced False here,
+  // both prompt checkboxes are disabled in ShowPrompt, the only SetEditValue()
+  // call in Process() is gated behind 'If False And bWriteHeader Then', and
+  // the BashTags-file write block is replaced by a defensive LogWarn.
   g_AddTags  := False;
   g_AddFile  := False;
   g_LogTests             := True;
@@ -538,6 +545,15 @@ Begin
 
   // Wish I didn't have to make a new list for this, but script errors on AssignFile
   slOutToFileTags := TStringList.Create;
+
+  // Single-plugin lock
+  g_TargetFile     := Nil;
+  g_TargetFileName := '';
+  g_MultiFileError := False;
+  g_OtherFiles     := TStringList.Create;
+  g_OtherFiles.Sorted        := True;
+  g_OtherFiles.Duplicates    := dupIgnore;
+  g_OtherFiles.CaseSensitive := False;
 
   If wbVersionNumber < MinXEditVer Then
     Begin
@@ -612,6 +628,21 @@ Begin
     exit;
 
   f := GetFile(input);
+
+  // Single-plugin enforcement: lock onto the first file we see.
+  // Any additional distinct file flips an error flag; Finalize then aborts the run.
+  If Not Assigned(g_TargetFile) Then
+    Begin
+      g_TargetFile     := f;
+      g_TargetFileName := GetFileName(f);
+    End
+  Else If Not SameText(GetFileName(f), g_TargetFileName) Then
+    Begin
+      g_MultiFileError := True;
+      If g_OtherFiles.IndexOf(GetFileName(f)) = -1 Then
+        g_OtherFiles.Add(GetFileName(f));
+      Exit;
+    End;
 
   g_FileName := GetFileName(f);
 
@@ -751,13 +782,13 @@ Begin
               For i := 0 To Pred(slTagRelationships.Count) Do
                 LogInfo(slTagRelationships[i]);
 
+            // Read-only debug fork: never write a BashTags file.
+            // The 'Write suggested tags to file' checkbox is disabled in
+            // ShowPrompt and g_AddFile is forced False in Initialize, so
+            // this branch is unreachable; the LogWarn is a defense-in-depth
+            // canary in case someone wires it back up.
             If g_AddFile Then
-              Begin
-                slOutToFileTags.Add(slFinalTags.DelimitedText);
-                slOutToFileTags.SaveToFile(DataPath + 'BashTags\' + ChangeFileExt(g_FileName, '.txt'));
-                slOutToFileTags.Clear;
-                LogInfo('Finished writing bash tags to BashTags file (canonical names).');
-              End;
+              LogWarn('READ-ONLY DEBUG FORK: refused to write to BashTags file (use the production script).');
           End;
       End;
 
@@ -942,6 +973,12 @@ Begin
           ProcessTag('Outfits.Add', e, o);
           ProcessTag('Outfits.Remove', e, o);
         End;
+
+      // R.AddSpells / R.ChangeSpells (Skyrim/SSE/Enderal). ProcessRaceSpells
+      // emits the Add/Change split (Adds-only -> R.AddSpells, Removes present
+      // -> R.ChangeSpells) using the per-game SPLO array path.
+      If sSignature = 'RACE' Then
+        ProcessRaceSpells(e, o);
     End;
 
   // -------------------------------------------------------------------------------
@@ -989,6 +1026,15 @@ Begin
               ProcessTag('NPC.Eyes', e, o);
               ProcessTag('NPC.FaceGen', e, o);
               ProcessTag('NPC.Hair', e, o);
+
+              // Oblivion-only here: NPC.Class / NPC.Race for FO3/FNV/Skyrim are
+              // emitted further down with template-flag gating. Oblivion has no
+              // template flag system, so emit unconditionally.
+              If wbIsOblivion Or wbIsOblivionR Then
+                Begin
+                  ProcessTag('NPC.Class', e, o);
+                  ProcessTag('NPC.Race',  e, o);
+                End;
             End;
         End
 
@@ -1060,6 +1106,16 @@ Begin
           g_Tag := 'Scripts';
           If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Script', False, False) Then
             ProcessTag(g_Tag, e, o);
+
+          // FO3/FNV Actors.Spells (CREA + NPC_). Skyrim/SSE NPC_ Actors.Spells is
+          // handled by the dedicated wbIsSkyrim NPC_ block above. The FNV/FO3
+          // template flag is named 'Use Actor Effect List' (not 'Use Spell List').
+          If wbIsFallout3 Or wbIsFalloutNV Then
+            Begin
+              g_Tag := 'Actors.Spells';
+              If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Actor Effect List', False, False) Then
+                ProcessTag('Actors.Spells', e, o);
+            End;
         End;
 
       If sSignature = 'CELL' Then
@@ -1377,6 +1433,16 @@ Var
   bSavedOK   : boolean;
   sSaveError : string;
 Begin
+  Result := 0;
+
+  If g_MultiFileError Then
+    Begin
+      LogError('This script must be run on a single plugin per invocation.');
+      LogError('Targeted: ' + g_TargetFileName + '; also seen: ' + g_OtherFiles.CommaText);
+      LogError('Re-run with only one plugin selected.');
+      Result := 99;
+    End;
+
   // Flush the debug trace BEFORE freeing other lists, so even if a Free
   // raises (or anything else goes wrong below) we still write the trace
   // and announce the path to the Messages tab.
@@ -1425,6 +1491,7 @@ Begin
   Try slBadTags.Free;          Except End;
   Try slDeprecatedTags.Free;   Except End;
   Try slOutToFileTags.Free;    Except End;
+  Try g_OtherFiles.Free;       Except End;
 End;
 
 
@@ -2169,11 +2236,12 @@ Begin
          End
 
          // Bookmark: Actors.Spells
+         // SPLO array name varies by game: TES4 = 'Spells', everything else = 'Actor Effects'.
   Else If (g_Tag = 'Actors.Spells') Then
-         If wbIsFallout4 Then
-           EvaluateByPath(e, m, 'Actor Effects')
-         Else
+         If wbIsOblivion Or wbIsOblivionR Then
            EvaluateByPath(e, m, 'Spells')
+         Else
+           EvaluateByPath(e, m, 'Actor Effects')
 
          // Bookmark: Actors.Stats
   Else If (g_Tag = 'Actors.Stats') Then
@@ -2707,12 +2775,14 @@ Begin
          EvaluateByPath(e, m, 'OBND')
 
          // Bookmark: Outfits.Add
+         // OTFT records expose a single child array element 'Items' (signature INAM).
+         // The previous 'OTFT' path was the record signature itself, which never resolves.
   Else If (g_Tag = 'Outfits.Add') Then
-         EvaluateByPathAdd(e, m, 'OTFT')
+         EvaluateByPathAdd(e, m, 'Items')
 
          // Bookmark: Outfits.Remove
   Else If (g_Tag = 'Outfits.Remove') Then
-         EvaluateByPathRemove(e, m, 'OTFT')
+         EvaluateByPathRemove(e, m, 'Items')
 
          // Bookmark: R.AddSpells / R.ChangeSpells handled by ProcessRaceSpells (list-diff split)
 
@@ -2747,8 +2817,14 @@ Begin
          End
 
          // Bookmark: R.ChangeSpells
+         // RACE SPLO array name varies by game: TES4 = 'Spells', TES5/SSE/Enderal = 'Actor Effects'.
+         // Normally reached via ProcessRaceSpells (which handles the Add/Change split itself);
+         // this handler is defensive in case ProcessTag('R.ChangeSpells', ...) is called directly.
   Else If (g_Tag = 'R.ChangeSpells') Then
-         EvaluateByPath(e, m, 'Spells')
+         If wbIsOblivion Or wbIsOblivionR Then
+           EvaluateByPath(e, m, 'Spells')
+         Else
+           EvaluateByPath(e, m, 'Actor Effects')
 
          // Bookmark: R.Description
   Else If (g_Tag = 'R.Description') Then
@@ -3151,8 +3227,17 @@ Begin
   If TagExists('R.AddSpells') And TagExists('R.ChangeSpells') Then
     Exit;
 
-  kSpells       := ElementByPath(ARecord, 'Spells');
-  kSpellsMaster := ElementByPath(AMaster,  'Spells');
+  // RACE SPLO array name varies by game: TES4 = 'Spells', TES5/SSE/Enderal = 'Actor Effects'.
+  If wbIsOblivion Or wbIsOblivionR Then
+    Begin
+      kSpells       := ElementByPath(ARecord, 'Spells');
+      kSpellsMaster := ElementByPath(AMaster,  'Spells');
+    End
+  Else
+    Begin
+      kSpells       := ElementByPath(ARecord, 'Actor Effects');
+      kSpellsMaster := ElementByPath(AMaster,  'Actor Effects');
+    End;
 
   // Both missing: nothing to suggest. Either-side missing: defer to general path-based check below.
   If Not Assigned(kSpells) And Not Assigned(kSpellsMaster) Then
@@ -3328,19 +3413,20 @@ Begin
 
   sSig := Signature(ARecord);
 
-  // Actors.SpellsForceAdd: superset on Spells (or FO4 Actor Effects), only if Actors.Spells already suggested.
+  // Actors.SpellsForceAdd: superset on the SPLO array, only if Actors.Spells already suggested.
+  // Array element name: TES4 = 'Spells', everything else = 'Actor Effects'.
   bSpells := (sSig = 'CREA') Or (sSig = 'NPC_');
   If bSpells And TagExists('Actors.Spells') And Not TagExists('Actors.SpellsForceAdd') Then
     Begin
-      If wbIsFallout4 Then
-        Begin
-          kArr       := ElementByPath(ARecord, 'Actor Effects');
-          kArrMaster := ElementByPath(AMaster,  'Actor Effects');
-        End
-      Else
+      If wbIsOblivion Or wbIsOblivionR Then
         Begin
           kArr       := ElementByPath(ARecord, 'Spells');
           kArrMaster := ElementByPath(AMaster,  'Spells');
+        End
+      Else
+        Begin
+          kArr       := ElementByPath(ARecord, 'Actor Effects');
+          kArrMaster := ElementByPath(AMaster,  'Actor Effects');
         End;
 
       slOver := TStringList.Create;
@@ -3554,11 +3640,12 @@ Begin
     chkAddFile.Parent   := frm;
     chkAddFile.Left     := 16 * ScaleFactor;
     chkAddFile.Top      := 39 * ScaleFactor;
-    chkAddFile.Width    := 185 * ScaleFactor;
+    chkAddFile.Width    := 280 * ScaleFactor;
     chkAddFile.Height   := 16 * ScaleFactor;
-    chkAddFile.Caption  := 'Write suggested tags to file';
+    chkAddFile.Caption  := 'Write suggested tags to file (DISABLED in debug fork)';
     chkAddFile.Checked  := False;
-    g_AddFile := chkAddFile.Checked;
+    chkAddFile.Enabled  := False;     // READ-ONLY DEBUG FORK
+    g_AddFile := False;               // never honored regardless of checkbox state
     chkAddFile.OnClick  := chkAddFileClick;
     chkAddFile.TabOrder := 0;
 
