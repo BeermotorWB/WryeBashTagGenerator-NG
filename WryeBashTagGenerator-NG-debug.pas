@@ -616,11 +616,10 @@ Var
   sTags        : string;
   i            : integer;
   f            : IwbFile;
-  slScanResults  : TStringList;
-  slFinalTags    : TStringList;
-  slNormExist    : TStringList;
-  slNetHeaderAdds: TStringList;
-  slDepFound     : TStringList;
+  slScanResults: TStringList;
+  slFinalTags  : TStringList;
+  slNormExist  : TStringList;
+  slDepFound   : TStringList;
   bWriteHeader : boolean;
   bHasWork     : boolean;
 Begin
@@ -670,11 +669,10 @@ Begin
 
   LogInfo('------------------------------------------------------------------------ RESULTS');
 
-  slScanResults   := TStringList.Create;
-  slFinalTags     := TStringList.Create;
-  slNormExist     := TStringList.Create;
-  slNetHeaderAdds := TStringList.Create;
-  slDepFound      := TStringList.Create;
+  slScanResults := TStringList.Create;
+  slFinalTags   := TStringList.Create;
+  slNormExist   := TStringList.Create;
+  slDepFound    := TStringList.Create;
   Try
     slScanResults.Sorted       := True;
     slScanResults.Duplicates   := dupIgnore;
@@ -685,9 +683,6 @@ Begin
     slNormExist.Sorted         := True;
     slNormExist.Duplicates     := dupIgnore;
     slNormExist.CaseSensitive  := False;
-    slNetHeaderAdds.Sorted         := True;
-    slNetHeaderAdds.Duplicates     := dupIgnore;
-    slNetHeaderAdds.CaseSensitive  := False;
 
     kHeader := ElementBySignature(f, 'TES4');
     kDescription := ElementBySignature(kHeader, 'SNAM');
@@ -713,13 +708,6 @@ Begin
     slNormExist.Clear;
     slNormExist.AddStrings(slExistingTags);
     NormalizeBashTagsInPlace(slNormExist);
-
-    slNetHeaderAdds.Clear;
-    StringListDifference(slFinalTags, slNormExist, slNetHeaderAdds);
-    LogInfo(FormatTags(slNetHeaderAdds,
-      'new or changed tag (vs current header):',
-      'new or changed tags (vs current header):',
-      'No new or changed tags vs current header.'));
 
     bHasWork := (slScanResults.Count > 0) Or (slDepFound.Count > 0) Or g_AddFile;
 
@@ -808,7 +796,6 @@ Begin
     slScanResults.Free;
     slFinalTags.Free;
     slNormExist.Free;
-    slNetHeaderAdds.Free;
     slDepFound.Free;
   End;
 
