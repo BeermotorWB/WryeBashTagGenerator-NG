@@ -35,7 +35,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-NG';
-  ScriptVersion = '1.9.1.0';
+  ScriptVersion = '1.9.1.1';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor';
   ScriptEmail   = 'NO SUPPORT';
@@ -787,23 +787,22 @@ Begin
               LogInfo('No BashTags file found at: ' + g_BashTagsFilePath);
             LogInfo(FormatTags(slFinalTags, 'suggested tag overall:', 'suggested tags overall:', 'No suggested tags overall.'));
 
-            // Net-new vs current header and vs BashTags file (informational; not gated on write checkboxes).
+            // Net-new vs header / vs BashTags file. Use FormatTags (same as other RESULTS
+            // lines) so xEdit Messages shows the {{BASH:...}} block reliably.
             slWriteDelta.Clear;
             StringListDifference(slFinalTags, slNormExist, slWriteDelta);
-            If slWriteDelta.Count > 0 Then
-              LogInfo('New tags to be added to header:' + #13#10#32#32#32#32#32#32 +
-                Format(' {{BASH:%s}}', [slWriteDelta.DelimitedText]))
-            Else
-              LogInfo('No new tags to add to header.');
+            LogInfo(FormatTags(slWriteDelta,
+              'new tag to be added to header:',
+              'new tags to be added to header:',
+              'No new tags to add to header.'));
             If g_BashTagsFileExists Then
               Begin
                 slWriteDelta.Clear;
                 StringListDifference(slFinalTags, slBashTagsFileAdds, slWriteDelta);
-                If slWriteDelta.Count > 0 Then
-                  LogInfo('New tags to be added to BashTags file:' + #13#10#32#32#32#32#32#32 +
-                    Format(' {{BASH:%s}}', [slWriteDelta.DelimitedText]))
-                Else
-                  LogInfo('No new tags to add to BashTags file.');
+                LogInfo(FormatTags(slWriteDelta,
+                  'new tag to be added to BashTags file:',
+                  'new tags to be added to BashTags file:',
+                  'No new tags to add to BashTags file.'));
               End;
 
             If g_ShowTagRelationships Then
