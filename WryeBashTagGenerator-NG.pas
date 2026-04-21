@@ -35,7 +35,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-NG';
-  ScriptVersion = '1.9.1.2';
+  ScriptVersion = '1.9.1.3';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor';
   ScriptEmail   = 'NO SUPPORT';
@@ -1792,19 +1792,42 @@ Begin
 End;
 
 
-// TODO: speed this up!
+// Treats a serialized edit-value string as an "empty key" ONLY when it looks
+// like a flag-array bit string (exclusively '0' and '1' chars) and contains
+// no set bits. This is the original optimization's actual intent: allow
+// CompareKeys to bail out cheaply when both sides are all-zero flag masks.
+//
+// The earlier implementation returned True whenever the string had no literal
+// '1' char anywhere, which false-positives on any non-flag edit value that
+// happens to lack the digit '1' -- e.g. FormID hex like "00039F26", EditorIDs
+// like "CRFThalmorHQFaction", or the integer "0". That silently suppressed
+// real differences and caused false-negative tag suggestions (e.g. C.Owner on
+// cutting room floor.esp cell 00071FFE, where both the master XOWN reference
+// and the overriding one had edit values containing no '1' digit).
 Function IsEmptyKey(AEditValues: String): boolean;
 
 Var 
   i : integer;
 Begin
-  Result := True;
+  Result := False;
+
+  // Empty string: nothing to compare; treat as NOT an empty-key sentinel so
+  // the caller falls through to its own SameText check (SameText('','')=True
+  // will handle the truly-identical-empty case correctly).
+  If Length(AEditValues) = 0 Then
+    Exit;
+
+  // Non-flag-array content disqualifies the fast path.
+  For i := 1 To Length(AEditValues) Do
+    If (AEditValues[i] <> '0') And (AEditValues[i] <> '1') Then
+      Exit;
+
+  // All-'0'/'1' now. Any '1' means at least one bit set -> not empty.
   For i := 1 To Length(AEditValues) Do
     If AEditValues[i] = '1' Then
-      Begin
-        Result := False;
-        Exit;
-      End;
+      Exit;
+
+  Result := True;
 End;
 
 
@@ -1948,6 +1971,26 @@ Begin
   y := ElementByPath(AMaster, APath);
 
   EvaluateRemove(x, y);
+End;
+
+
+// Resolves by subrecord signature (XOWN, XRNK, XGLB, ...) instead of a named
+// struct path. Needed for tests where relying on an xEdit-defined parent
+// struct is fragile (e.g. the 'Ownership' RStruct whose collapsed-summary
+// GetEditValue varies across xEdit versions). Semantics otherwise match
+// EvaluateByPath: suggest the tag if one side is present and the other isn't,
+// if child counts differ, if the subrecord's own edit value differs, or if
+// the recursive serialized contents differ.
+Procedure EvaluateBySignature(AElement: IwbElement; AMaster: IwbElement; ASignature: String);
+
+Var 
+  x : IInterface;
+  y : IInterface;
+Begin
+  x := ElementBySignature(AElement, ASignature);
+  y := ElementBySignature(AMaster, ASignature);
+
+  Evaluate(x, y);
 End;
 
 
@@ -2204,8 +2247,30 @@ Begin
          EvaluateByPath(e, m, 'FULL')
 
          // Bookmark: C.Owner
+         //
+         // Wrye Bash's C.Owner patcher imports XOWN (Owner), XRNK (Faction
+         // rank), XGLB (Oblivion-only Global), and the DATA "Public Place"
+         // flag (Oblivion / FO3 / FNV). Historically this was a single
+         // EvaluateByPath(e, m, 'Ownership'), which (a) depends on xEdit's
+         // RStruct path resolving cleanly, (b) collapses all children into
+         // one recursive edit-value string that then hits CompareKeys'
+         // IsEmptyKey gate, and (c) omits the Public Place flag entirely.
+         //
+         // Replaced with direct subrecord-signature checks plus the flag,
+         // mirroring the Wrye Bash field set and staying robust against
+         // struct-path / summary-flag quirks across xEdit versions.
   Else If (g_Tag = 'C.Owner') Then
-         EvaluateByPath(e, m, 'Ownership')
+         Begin
+           EvaluateBySignature(e, m, 'XOWN');
+           EvaluateBySignature(e, m, 'XRNK');
+
+           If wbIsOblivion Or wbIsOblivionR Then
+             EvaluateBySignature(e, m, 'XGLB');
+
+           If wbIsOblivion Or wbIsOblivionR Or wbIsFallout3 Or wbIsFalloutNV Then
+             If CompareFlags(e, m, 'DATA', 'Public Place', True, True) Then
+               Exit;
+         End
 
          // Bookmark: C.RecordFlags
   Else If (g_Tag = 'C.RecordFlags') Then

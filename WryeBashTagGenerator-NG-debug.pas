@@ -38,7 +38,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-NG-debug';
-  ScriptVersion = '1.9.1.0-debug';
+  ScriptVersion = '1.9.1.3-debug';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor';
   ScriptEmail   = 'NO SUPPORT';
@@ -1907,19 +1907,30 @@ Begin
 End;
 
 
-// TODO: speed this up!
+// Treats a serialized edit-value string as an "empty key" ONLY when it looks
+// like a flag-array bit string (exclusively '0' and '1' chars) and contains
+// no set bits. See WryeBashTagGenerator-NG.pas for the full rationale; this
+// fork must track the production fix so CompareKeys' skip-both-empty gate
+// behaves identically.
 Function IsEmptyKey(AEditValues: String): boolean;
 
 Var 
   i : integer;
 Begin
-  Result := True;
+  Result := False;
+
+  If Length(AEditValues) = 0 Then
+    Exit;
+
+  For i := 1 To Length(AEditValues) Do
+    If (AEditValues[i] <> '0') And (AEditValues[i] <> '1') Then
+      Exit;
+
   For i := 1 To Length(AEditValues) Do
     If AEditValues[i] = '1' Then
-      Begin
-        Result := False;
-        Exit;
-      End;
+      Exit;
+
+  Result := True;
 End;
 
 
@@ -2082,6 +2093,30 @@ Begin
   y := ElementByPath(AMaster, APath);
 
   EvaluateRemove(x, y);
+End;
+
+
+// Mirrors EvaluateByPath but resolves via subrecord signature instead of a
+// named struct path. See production .pas for rationale (C.Owner rewrite).
+Procedure EvaluateBySignature(AElement: IwbElement; AMaster: IwbElement; ASignature: String);
+
+Var 
+  x : IInterface;
+  y : IInterface;
+Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateBySignature: tag=%s sig=%s', [g_Tag, ASignature]));
+  x := ElementBySignature(AElement, ASignature);
+  y := ElementBySignature(AMaster, ASignature);
+
+  DbgLog(DBG_LEAF_DIFFS, Format('       override-present=%s  master-present=%s',
+    [IfThen(Assigned(x), 'true', 'false'), IfThen(Assigned(y), 'true', 'false')]));
+  If Assigned(x) Or Assigned(y) Then
+    Begin
+      DbgLog(DBG_LEAF_DIFFS, Format('       override-edv="%s"', [DbgEdv(x)]));
+      DbgLog(DBG_LEAF_DIFFS, Format('       master-edv  ="%s"', [DbgEdv(y)]));
+    End;
+
+  Evaluate(x, y);
 End;
 
 
@@ -2344,8 +2379,23 @@ Begin
          EvaluateByPath(e, m, 'FULL')
 
          // Bookmark: C.Owner
+         //
+         // See production WryeBashTagGenerator-NG.pas for full rationale.
+         // Summary: the legacy EvaluateByPath(..., 'Ownership') was fragile
+         // across xEdit versions and omitted the Public Place flag. Direct
+         // subrecord comparisons match Wrye Bash's C.Owner field set.
   Else If (g_Tag = 'C.Owner') Then
-         EvaluateByPath(e, m, 'Ownership')
+         Begin
+           EvaluateBySignature(e, m, 'XOWN');
+           EvaluateBySignature(e, m, 'XRNK');
+
+           If wbIsOblivion Or wbIsOblivionR Then
+             EvaluateBySignature(e, m, 'XGLB');
+
+           If wbIsOblivion Or wbIsOblivionR Or wbIsFallout3 Or wbIsFalloutNV Then
+             If CompareFlags(e, m, 'DATA', 'Public Place', True, True) Then
+               Exit;
+         End
 
          // Bookmark: C.RecordFlags
   Else If (g_Tag = 'C.RecordFlags') Then
