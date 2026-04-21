@@ -35,7 +35,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-NG';
-  ScriptVersion = '1.9.1.1';
+  ScriptVersion = '1.9.1.2';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor';
   ScriptEmail   = 'NO SUPPORT';
@@ -787,22 +787,46 @@ Begin
               LogInfo('No BashTags file found at: ' + g_BashTagsFilePath);
             LogInfo(FormatTags(slFinalTags, 'suggested tag overall:', 'suggested tags overall:', 'No suggested tags overall.'));
 
-            // Net-new vs header / vs BashTags file. Use FormatTags (same as other RESULTS
-            // lines) so xEdit Messages shows the {{BASH:...}} block reliably.
+            // Net-new and removed vs header / vs BashTags file. Use FormatTags so xEdit
+            // Messages renders the {{BASH:...}} block the same way as other RESULTS lines.
+
+            // Header adds: skip when delta == full final set (redundant — header was
+            // empty, or only contained tokens that normalize away). Still log the
+            // "No new tags..." message when delta is empty but final set is non-empty.
             slWriteDelta.Clear;
             StringListDifference(slFinalTags, slNormExist, slWriteDelta);
+            If slWriteDelta.Count <> slFinalTags.Count Then
+              LogInfo(FormatTags(slWriteDelta,
+                'new tag to be added to header:',
+                'new tags to be added to header:',
+                'No new tags to add to header.'));
+
+            // Header removals: literal tokens currently in {{BASH:...}} that will
+            // not be present after rewrite (alias rename, TagIsRemoved drop, etc.).
+            slWriteDelta.Clear;
+            StringListDifference(slExistingTags, slFinalTags, slWriteDelta);
             LogInfo(FormatTags(slWriteDelta,
-              'new tag to be added to header:',
-              'new tags to be added to header:',
-              'No new tags to add to header.'));
+              'tag to be removed from header:',
+              'tags to be removed from header:',
+              'No tags to be removed from header.'));
+
             If g_BashTagsFileExists Then
               Begin
+                // BashTags file adds.
                 slWriteDelta.Clear;
                 StringListDifference(slFinalTags, slBashTagsFileAdds, slWriteDelta);
                 LogInfo(FormatTags(slWriteDelta,
                   'new tag to be added to BashTags file:',
                   'new tags to be added to BashTags file:',
                   'No new tags to add to BashTags file.'));
+
+                // BashTags file removals: existing additive tags that vanish on overwrite.
+                slWriteDelta.Clear;
+                StringListDifference(slBashTagsFileAdds, slFinalTags, slWriteDelta);
+                LogInfo(FormatTags(slWriteDelta,
+                  'tag to be removed from BashTags file:',
+                  'tags to be removed from BashTags file:',
+                  'No tags to be removed from BashTags file.'));
               End;
 
             If g_ShowTagRelationships Then
