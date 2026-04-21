@@ -35,7 +35,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-NG';
-  ScriptVersion = '1.9.1.3';
+  ScriptVersion = '1.9.1.6';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor';
   ScriptEmail   = 'NO SUPPORT';
@@ -1994,6 +1994,138 @@ Begin
 End;
 
 
+// Resolves a named top-level list on a main record. ElementByPath is the
+// standard accessor but it does not reliably resolve wbArrayS-with-signature
+// arrays that live directly on the record (e.g. OTFT INAM 'Items'): on those
+// the path lookup can return nil while ElementBySignature succeeds. Callers
+// can therefore pass either the xEdit name ('Items', 'Perks', 'Relations',
+// 'FormIDs') or the 4-char signature ('INAM') — whichever is most reliable
+// for the record type.
+Function ResolveListArray(ARec: IInterface; Const ANameOrSig: String): IInterface;
+Begin
+  Result := ElementByPath(ARec, ANameOrSig);
+  If Not Assigned(Result) Then
+    Result := ElementBySignature(ARec, ANameOrSig);
+End;
+
+
+// Returns the "identity key" used for set-diff on a list entry. If ARefPath is
+// empty the key is the entry's own edit value (flat FormID lists like OTFT
+// 'Items' or FLST 'FormIDs'). Otherwise the key is taken from the named
+// sub-path inside the entry (struct lists like NPC_ 'Perks'->'Perk',
+// CONT 'Items'->'CNTO\Item', FACT 'Relations'->'Faction').
+Function ListEntryKey(AEntry: IInterface; Const ARefPath: String): string;
+Begin
+  If ARefPath = '' Then
+    Result := GetEditValue(AEntry)
+  Else
+    Result := GetElementEditValues(AEntry, ARefPath);
+End;
+
+
+// True iff an entry with the given key exists in the master array. Linear
+// scan; lists are small (perks, items, factions, relations rarely exceed
+// low double-digit counts).
+Function ListContainsKey(AArr: IInterface; Const AKey: String; Const ARefPath: String): boolean;
+
+Var 
+  j : integer;
+Begin
+  Result := False;
+  If Not Assigned(AArr) Then
+    Exit;
+  For j := 0 To Pred(ElementCount(AArr)) Do
+    If SameText(ListEntryKey(ElementByIndex(AArr, j), ARefPath), AKey) Then
+      Begin
+        Result := True;
+        Exit;
+      End;
+End;
+
+
+// Set-diff .Add detector for keyed sub-record lists (OTFT Items, CONT Items,
+// NPC_ Perks, FLST FormIDs, FACT Relations, RACE Relations).
+// Suggests ATagName iff at least one override entry's identity key is NOT
+// present in the master array. Unlike the prior element-count heuristic this
+// correctly fires when a mod substitutes items (same total count, different
+// entries), e.g. CRF's MQ101StormcloakPrisonerOutfit swapping a static ARMO
+// for a CRFArmorStormcloakCuirass LVLI.
+Procedure EvaluateListAdd(ARec: IInterface; AMaster: IInterface;
+                           Const AArrayName: String; Const ARefPath: String);
+
+Var 
+  kArr, kArrM : IInterface;
+  kEntry      : IInterface;
+  i           : integer;
+  sRef        : string;
+Begin
+  If TagExists(g_Tag) Then
+    Exit;
+
+  kArr  := ResolveListArray(ARec,    AArrayName);
+  kArrM := ResolveListArray(AMaster, AArrayName);
+
+  If Not Assigned(kArr) Then
+    Exit;
+  If ElementCount(kArr) = 0 Then
+    Exit;
+
+  For i := 0 To Pred(ElementCount(kArr)) Do
+    Begin
+      kEntry := ElementByIndex(kArr, i);
+      sRef   := ListEntryKey(kEntry, ARefPath);
+      If sRef = '' Then
+        Continue;
+
+      If Not ListContainsKey(kArrM, sRef, ARefPath) Then
+        Begin
+          AddLogEntry('ListAdd', kEntry, kArrM);
+          slSuggestedTags.Add(g_Tag);
+          Exit;
+        End;
+    End;
+End;
+
+
+// Symmetric of EvaluateListAdd. Suggests ATagName iff at least one master
+// entry's identity key is NOT present in the override array.
+Procedure EvaluateListRemove(ARec: IInterface; AMaster: IInterface;
+                              Const AArrayName: String; Const ARefPath: String);
+
+Var 
+  kArr, kArrM : IInterface;
+  kEntry      : IInterface;
+  i           : integer;
+  sRef        : string;
+Begin
+  If TagExists(g_Tag) Then
+    Exit;
+
+  kArr  := ResolveListArray(ARec,    AArrayName);
+  kArrM := ResolveListArray(AMaster, AArrayName);
+
+  If Not Assigned(kArrM) Then
+    Exit;
+  If ElementCount(kArrM) = 0 Then
+    Exit;
+
+  For i := 0 To Pred(ElementCount(kArrM)) Do
+    Begin
+      kEntry := ElementByIndex(kArrM, i);
+      sRef   := ListEntryKey(kEntry, ARefPath);
+      If sRef = '' Then
+        Continue;
+
+      If Not ListContainsKey(kArr, sRef, ARefPath) Then
+        Begin
+          AddLogEntry('ListRemove', kEntry, kArr);
+          slSuggestedTags.Add(g_Tag);
+          Exit;
+        End;
+    End;
+End;
+
+
 Procedure ProcessTag(ATag: String; e: IInterface; m: IInterface);
 
 Var 
@@ -2104,8 +2236,10 @@ Begin
          EvaluateByPath(e, m, 'INAM')
 
          // Bookmark: NPC.Perks.Add (TES5/SSE/FO4)
+         // Set-diff on Perks[*]\Perk (FormID). Element-count-only would miss
+         // substitutions (swap one perk for another at same total count).
   Else If (g_Tag = 'NPC.Perks.Add') Then
-         EvaluateByPathAdd(e, m, 'Perks')
+         EvaluateListAdd(e, m, 'Perks', 'Perk')
 
          // Bookmark: NPC.Perks.Change
          // Match entries on Perk; only fire if a shared perk's Rank differs.
@@ -2115,7 +2249,7 @@ Begin
 
          // Bookmark: NPC.Perks.Remove
   Else If (g_Tag = 'NPC.Perks.Remove') Then
-         EvaluateByPathRemove(e, m, 'Perks')
+         EvaluateListRemove(e, m, 'Perks', 'Perk')
 
          // Bookmark: Actors.RecordFlags (!FO4)
   Else If (g_Tag = 'Actors.RecordFlags') Then
@@ -2313,8 +2447,9 @@ Begin
          EvaluateByPath(e, m, 'DATA\Type')
 
          // Bookmark: Deflst
+         // FLST FormIDs is a flat FormID array; identity key is entry's own edit value.
   Else If (g_Tag = 'Deflst') Then
-         EvaluateByPathRemove(e, m, 'FormIDs')
+         EvaluateListRemove(e, m, 'FormIDs', '')
 
          // Bookmark: Destructible
   Else If (g_Tag = 'Destructible') Then
@@ -2612,8 +2747,9 @@ Begin
          End
 
          // Bookmark: Invent.Add
+         // CNTO Items[*]\CNTO\Item holds the item FormID (separate from Count).
   Else If (g_Tag = 'Invent.Add') Then
-         EvaluateByPathAdd(e, m, 'Items')
+         EvaluateListAdd(e, m, 'Items', 'CNTO\Item')
 
          // Bookmark: Invent.Change
          // Match entries on CNTO\Item; only fire if a shared item's count or extra data
@@ -2627,7 +2763,7 @@ Begin
 
          // Bookmark: Invent.Remove
   Else If (g_Tag = 'Invent.Remove') Then
-         EvaluateByPathRemove(e, m, 'Items')
+         EvaluateListRemove(e, m, 'Items', 'CNTO\Item')
 
          // Bookmark: Keywords
   Else If (g_Tag = 'Keywords') Then
@@ -2701,13 +2837,19 @@ Begin
 
          // Bookmark: Outfits.Add
          // OTFT records expose a single child array element 'Items' (signature INAM).
-         // The previous 'OTFT' path was the record signature itself, which never resolves.
+         // Pass the 'INAM' signature rather than the 'Items' name: OTFT's items
+         // array is wbArrayS(INAM, 'Items', ...) at the top level of the record,
+         // and ElementByPath(rec, 'Items') can return nil on wbArrayS-with-signature
+         // arrays on some xEdit builds. ResolveListArray falls back to
+         // ElementBySignature, which is stable. Identity key is the FormID itself.
+         // Element-count-only would miss e.g. MQ101StormcloakPrisonerOutfit swapping
+         // a static ARMO for an LVLI at the same count.
   Else If (g_Tag = 'Outfits.Add') Then
-         EvaluateByPathAdd(e, m, 'Items')
+         EvaluateListAdd(e, m, 'INAM', '')
 
          // Bookmark: Outfits.Remove
   Else If (g_Tag = 'Outfits.Remove') Then
-         EvaluateByPathRemove(e, m, 'Items')
+         EvaluateListRemove(e, m, 'INAM', '')
 
          // Bookmark: R.AddSpells / R.ChangeSpells handled by ProcessRaceSpells (list-diff split)
 
@@ -2786,8 +2928,9 @@ Begin
          End
 
          // Bookmark: R.Relations.Add
+         // RACE Relations[*]\Faction holds the faction FormID (separate from modifier).
   Else If (g_Tag = 'R.Relations.Add') Then
-         EvaluateByPathAdd(e, m, 'Relations')
+         EvaluateListAdd(e, m, 'Relations', 'Faction')
 
          // Bookmark: R.Relations.Change
          // Match entries on Faction; only fire if a shared faction's Modifier or
@@ -2801,7 +2944,7 @@ Begin
 
          // Bookmark: R.Relations.Remove
   Else If (g_Tag = 'R.Relations.Remove') Then
-         EvaluateByPathRemove(e, m, 'Relations')
+         EvaluateListRemove(e, m, 'Relations', 'Faction')
 
          // Bookmark: R.Skills
   Else If (g_Tag = 'R.Skills') Then
@@ -2830,8 +2973,9 @@ Begin
          EvaluateByPath(e, m, 'VTCK\Voice #0 (Male)')
 
          // Bookmark: Relations.Add
+         // FACT Relations[*]\Faction holds the target faction FormID.
   Else If (g_Tag = 'Relations.Add') Then
-         EvaluateByPathAdd(e, m, 'Relations')
+         EvaluateListAdd(e, m, 'Relations', 'Faction')
 
          // Bookmark: Relations.Change
          // Match entries on Faction; only fire if a shared faction's Modifier or
@@ -2845,7 +2989,7 @@ Begin
 
          // Bookmark: Relations.Remove
   Else If (g_Tag = 'Relations.Remove') Then
-         EvaluateByPathRemove(e, m, 'Relations')
+         EvaluateListRemove(e, m, 'Relations', 'Faction')
 
          // Bookmark: Roads
   Else If (g_Tag = 'Roads') Then
