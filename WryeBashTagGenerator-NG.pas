@@ -787,17 +787,15 @@ Begin
               LogInfo('No BashTags file found at: ' + g_BashTagsFilePath);
             LogInfo(FormatTags(slFinalTags, 'suggested tag overall:', 'suggested tags overall:', 'No suggested tags overall.'));
 
-            If g_AddTags Then
-              Begin
-                slWriteDelta.Clear;
-                StringListDifference(slFinalTags, slNormExist, slWriteDelta);
-                If slWriteDelta.Count > 0 Then
-                  LogInfo('New tags to be added to header:' + #13#10#32#32#32#32#32#32 +
-                    Format(' {{BASH:%s}}', [slWriteDelta.DelimitedText]))
-                Else
-                  LogInfo('No new tags to add to header.');
-              End;
-            If g_AddFile Then
+            // Net-new vs current header and vs BashTags file (informational; not gated on write checkboxes).
+            slWriteDelta.Clear;
+            StringListDifference(slFinalTags, slNormExist, slWriteDelta);
+            If slWriteDelta.Count > 0 Then
+              LogInfo('New tags to be added to header:' + #13#10#32#32#32#32#32#32 +
+                Format(' {{BASH:%s}}', [slWriteDelta.DelimitedText]))
+            Else
+              LogInfo('No new tags to add to header.');
+            If g_BashTagsFileExists Then
               Begin
                 slWriteDelta.Clear;
                 StringListDifference(slFinalTags, slBashTagsFileAdds, slWriteDelta);
