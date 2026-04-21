@@ -8,7 +8,7 @@ xEdit Pascal script that generates [Wrye Bash](https://github.com/wrye-bash/wrye
 
 Fallout 3, Fallout: New Vegas, Fallout 4 (incl. VR), Oblivion, Oblivion Remastered, Skyrim (LE / SE / VR), Enderal, Enderal Special Edition.
 
-Fallout 76 is explicitly **unsupported** (CBash limitation).
+Fallout 76 is explicitly **unsupported**.
 
 ## Requirements
 
