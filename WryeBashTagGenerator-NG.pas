@@ -25,6 +25,30 @@
     - removes present (master has SPEL not in override)  -> R.ChangeSpells (full override required to apply removal)
     - adds-only                                          -> R.AddSpells    (additive merge sufficient; preserves other mods' adds)
     - identical sets                                     -> nothing
+
+  Known coverage gaps (docs/wrye-bash-tags.md items not yet implemented):
+    - R.Stats (Skyrim): tag entirely unimplemented. Needs a dedicated
+      ProcessTag branch evaluating RACE DATA\Starting Health/Magicka/Stamina,
+      Base Carry Weight, Health/Magicka/Stamina Regen, Unarmed Damage,
+      Unarmed Reach; plus a dispatch under the Skyrim RACE block.
+    - Names on Skyrim-specific signatures: AVIF, CLFM, EXPL, HAZD, HDPT,
+      LCTN, MESG, MSTT, PERK, SCRL, SHOU, SNCT, TACT, TREE, WATR, WOOP
+      are listed in the Wrye Bash Skyrim Names table but have no dispatch
+      here. Needs a Skyrim-only ContainsStr block.
+    - Actors.ACBS (Skyrim field coverage): the non-FO4 branch evaluates
+      Oblivion/FO3/FNV-shaped paths (Fatigue, Calc min/max, DATA\Base
+      Health) that do not exist on Skyrim. Skyrim-specific fields
+      (Magicka Offset, Stamina Offset, Disposition Base, Health Offset,
+      Bleedout Override) are never checked. Needs a Skyrim branch with
+      xEdit-schema-verified paths.
+    - Actors.AIData (Skyrim field coverage): same class of problem —
+      non-FO4 branch checks Responsibility / Teaches / Maximum training
+      level / Buys-Sells-Services, none of which exist on Skyrim AIDT.
+      Missing: Morality, Mood, Assistance, Aggro radius fields.
+    - C.MiscFlags flag name: uses 'Can Travel From Here'; Wrye Bash docs
+      call it 'Can't Travel From Here / Invert Fast Travel Behavior'.
+      Needs verification against the actual xEdit flag-array schema
+      before changing.
 }
 
 
@@ -947,6 +971,13 @@ Begin
 
       Else If sSignature = 'SPEL' Then
              ProcessTag('SpellStats', e, o);
+
+      // Scripts on Oblivion: SCRI subrecord in the signatures below. Oblivion
+      // lacks the template flag system, so this is a plain signature check
+      // (no 'Use Script' gate like FO3/FNV/Skyrim). Independent If — per-tag
+      // dedup is handled inside ProcessTag.
+      If ContainsStr('ACTI ALCH APPA ARMO BOOK CLOT CONT CREA DOOR FLOR FURN INGR KEYM LIGH LVLC MISC NPC_ QUST SGST SLGM WEAP', sSignature) Then
+        ProcessTag('Scripts', e, o);
     End;
 
   // -------------------------------------------------------------------------------
@@ -968,7 +999,7 @@ Begin
           ProcessTag('C.SkyLighting', e, o);
         End;
 
-      If ContainsStr('ACTI ALCH AMMO ARMO BOOK FLOR FURN INGR KEYM LCTN MGEF MISC NPC_ SCRL SLGM SPEL TACT WEAP', sSignature) Then
+      If ContainsStr('ACTI ALCH AMMO ARMO BOOK FLOR FURN INGR KEYM LCTN MGEF MISC NPC_ RACE SCRL SLGM SPEL TACT WEAP', sSignature) Then
         ProcessTag('Keywords', e, o);
 
       If sSignature = 'FACT' Then
@@ -1006,6 +1037,15 @@ Begin
       // -> R.ChangeSpells) using the per-game SPLO array path.
       If sSignature = 'RACE' Then
         ProcessRaceSpells(e, o);
+
+      // COBJ (Constructible Object) inventory on Skyrim+. Uses the same
+      // 'Items' / CNTO shape as CONT, so the standard Invent.* handlers apply.
+      If sSignature = 'COBJ' Then
+        Begin
+          ProcessTag('Invent.Add', e, o);
+          ProcessTag('Invent.Change', e, o);
+          ProcessTag('Invent.Remove', e, o);
+        End;
     End;
 
   // -------------------------------------------------------------------------------
@@ -1015,6 +1055,12 @@ Begin
     Begin
       If sSignature = 'FLST' Then
         ProcessTag('Deflst', e, o);
+
+      // Creatures.Blood applies to CREA on both Oblivion (NAM0/NAM1) and
+      // FO3/FNV (CNAM). The Oblivion dispatch lives in the Oblivion block
+      // above; this is the FO3/FNV counterpart.
+      If sSignature = 'CREA' Then
+        ProcessTag('Creatures.Blood', e, o);
 
       If ContainsStr('ACTI ALCH AMMO BOOK CONT DOOR FURN IMOD KEYM MISC MSTT PROJ TACT TERM WEAP', sSignature) Then
         ProcessTag('Destructible', e, o)
@@ -1074,6 +1120,12 @@ Begin
                ProcessTag('R.Relations.Add', e, o);
                ProcessTag('R.Relations.Change', e, o);
                ProcessTag('R.Relations.Remove', e, o);
+               // R.Ears/Head/Mouth/Teeth are Oblivion/FO3/FNV-only per Wrye
+               // Bash; emitted here rather than in the FO3/FNV/Skyrim block.
+               ProcessTag('R.Ears', e, o);
+               ProcessTag('R.Head', e, o);
+               ProcessTag('R.Mouth', e, o);
+               ProcessTag('R.Teeth', e, o);
              End;
     End;
 
@@ -1126,20 +1178,21 @@ Begin
           ProcessTag('C.ImageSpace', e, o);
         End;
 
-      If sSignature = 'RACE' Then
-        Begin
-          ProcessTag('R.Ears', e, o);
-          ProcessTag('R.Head', e, o);
-          ProcessTag('R.Mouth', e, o);
-          ProcessTag('R.Teeth', e, o);
-          ProcessTag('R.Skills', e, o);
-          ProcessTag('R.Description', e, o);
-          ProcessTag('R.Voice-F', e, o);
-          ProcessTag('R.Voice-M', e, o);
-        End;
-
       If ContainsStr('ACTI ALCH ARMO CONT DOOR FLOR FURN INGR KEYM LIGH LVLC MISC QUST WEAP', sSignature) Then
         ProcessTag('Scripts', e, o);
+    End;
+
+  // -------------------------------------------------------------------------------
+  // GROUP: RACE tags supported on every game except FO4.
+  // R.Description / R.Skills / R.Voice-F / R.Voice-M apply to Oblivion,
+  // FO3/FNV, and Skyrim per Wrye Bash.
+  // -------------------------------------------------------------------------------
+  If Not wbIsFallout4 And (sSignature = 'RACE') Then
+    Begin
+      ProcessTag('R.Description', e, o);
+      ProcessTag('R.Skills', e, o);
+      ProcessTag('R.Voice-F', e, o);
+      ProcessTag('R.Voice-M', e, o);
     End;
 
   // -------------------------------------------------------------------------------
@@ -1310,6 +1363,13 @@ Begin
           ProcessTag('Invent.Remove', e, o);
         End;
 
+      If sSignature = 'COBJ' Then
+        Begin
+          ProcessTag('Invent.Add', e, o);
+          ProcessTag('Invent.Change', e, o);
+          ProcessTag('Invent.Remove', e, o);
+        End;
+
       If sSignature = 'FACT' Then
         Begin
           ProcessTag('Relations.Add', e, o);
@@ -1323,8 +1383,7 @@ Begin
           ProcessTag('Outfits.Remove', e, o);
         End;
 
-      If sSignature = 'FLST' Then
-        ProcessTag('Deflst', e, o);
+      // Deflst applies to FO3/FNV only per Wrye Bash; FO4 has no equivalent.
 
       If sSignature = 'MGEF' Then
         ProcessTag('EffectStats', e, o);
@@ -1352,7 +1411,7 @@ Begin
   If wbIsSkyrim And ContainsStr('ACTI ADDN ALCH AMMO APPA ARMO ARTO ASPC BOOK CONT DOOR DUAL ENCH EXPL FLOR FURN GRAS HAZD IDLM INGR KEYM LIGH LVLI LVLN LVSP MISC MSTT NPC_ PROJ SCRL SLGM SOUN SPEL STAT TACT TREE TXST WEAP', sSignature) Then
     ProcessTag('ObjectBounds', e, o);
 
-  If wbIsFallout4 And ContainsStr('ACTI ADDN ALCH AMMO ARMO ARTO ASPC BOOK CMPO CONT DOOR ENCH EXPL FLOR FURN GRAS HAZD IDLM INGR KEYM LIGH LVLI LVLN LVSP MISC MSTT NOTE NPC_ PKIN PROJ SCOL SOUN SPEL STAT', sSignature) Then
+  If wbIsFallout4 And ContainsStr('ACTI ADDN ALCH AMMO ARMO ARTO ASPC BNDS BOOK CMPO CONT DOOR ENCH EXPL FLOR FURN GRAS HAZD IDLM INGR KEYM LIGH LVLI LVLN LVSP MISC MSTT NOTE NPC_ PKIN PROJ SCOL SOUN SPEL STAT', sSignature) Then
     ProcessTag('ObjectBounds', e, o);
 
   // Text — per-game signature whitelist. Not applicable to FO4.
@@ -2086,6 +2145,7 @@ Begin
           If Not CompareFlags(x, y, 'Template Flags', 'Stats', False, False) And CompareKeys(a, b) Then
             Exit;
 
+          EvaluateByPath(x, y, 'Level');
           EvaluateByPath(x, y, 'Calc min level');
           EvaluateByPath(x, y, 'Calc max level');
           EvaluateByPath(x, y, 'Disposition Base');
@@ -2141,6 +2201,16 @@ Begin
                EvaluateByPath(x, y, 'Responsibility');
                EvaluateByPath(x, y, 'Teaches');
                EvaluateByPath(x, y, 'Maximum training level');
+
+               // Added in FO3/FNV; not present on Oblivion AIDT. EvaluateByPath
+               // is safe on Oblivion (missing path is a silent no-op).
+               If wbIsFallout3 Or wbIsFalloutNV Then
+                 Begin
+                   EvaluateByPath(x, y, 'Mood');
+                   EvaluateByPath(x, y, 'Assistance');
+                   EvaluateByPath(x, y, 'Aggro Radius Behavior');
+                   EvaluateByPath(x, y, 'Aggro Radius');
+                 End;
 
                If CompareNativeValues(x, y, 'Buys/Sells and Services') Then
                  Exit;
@@ -2241,13 +2311,22 @@ Begin
          EvaluateByPath(e, m, 'XCAS')
 
          // Bookmark: C.Climate
+         // Per-game gating flag differs: Oblivion/FO3/FNV use 'Behave Like
+         // Exterior', Skyrim/Enderal/SSE use 'Show Sky'. Fire the tag if the
+         // flag value differs between master and override, otherwise diff XCCM.
   Else If (g_Tag = 'C.Climate') Then
          Begin
-           // add tag if the Behave Like Exterior flag is set ine one record but not the other
-           If CompareFlags(e, m, 'DATA', 'Behave Like Exterior', True, True) Then
-             Exit;
+           If wbIsSkyrim Then
+             Begin
+               If CompareFlags(e, m, 'DATA', 'Show Sky', True, True) Then
+                 Exit;
+             End
+           Else
+             Begin
+               If CompareFlags(e, m, 'DATA', 'Behave Like Exterior', True, True) Then
+                 Exit;
+             End;
 
-           // evaluate additional property
            EvaluateByPath(e, m, 'XCCM');
          End
 
@@ -2297,8 +2376,12 @@ Begin
          End
 
          // Bookmark: C.Music
+         // Oblivion's music subrecord is XCMT; every other supported game uses XCMO.
   Else If (g_Tag = 'C.Music') Then
-         EvaluateByPath(e, m, 'XCMO')
+         If wbIsOblivion Then
+           EvaluateByPath(e, m, 'XCMT')
+         Else
+           EvaluateByPath(e, m, 'XCMO')
 
          // Bookmark: FULL (C.Name, Names)
   Else If (g_Tag = 'C.Name') Or (g_Tag = 'Names') Then
@@ -2322,10 +2405,10 @@ Begin
            EvaluateBySignature(e, m, 'XOWN');
            EvaluateBySignature(e, m, 'XRNK');
 
-           If wbIsOblivion Or wbIsOblivionR Then
+           If wbIsOblivion Then
              EvaluateBySignature(e, m, 'XGLB');
 
-           If wbIsOblivion Or wbIsOblivionR Or wbIsFallout3 Or wbIsFalloutNV Then
+           If wbIsOblivion Or wbIsFallout3 Or wbIsFalloutNV Then
              If CompareFlags(e, m, 'DATA', 'Public Place', True, True) Then
                Exit;
          End
@@ -2354,17 +2437,30 @@ Begin
            If CompareFlags(e, m, 'DATA', 'Is Interior Cell', False, False) Then
              Exit;
 
-           // evaluate properties
            EvaluateByPath(e, m, 'XCLW');
            EvaluateByPath(e, m, 'XCWT');
+
+           // Water Noise Texture (XNAM) is FO3/FNV/Skyrim; Oblivion has no equivalent.
+           If Not wbIsOblivion Then
+             EvaluateByPath(e, m, 'XNAM');
+
+           // Water Environment Map (XWEM) is Skyrim/Enderal/SSE only.
+           If wbIsSkyrim Then
+             EvaluateByPath(e, m, 'XWEM');
          End
 
          // Bookmark: Creatures.Blood
+         // Oblivion stores blood art in two subrecords (NAM0 Blood Spray,
+         // NAM1 Blood Decal). FO3/FNV collapse this to a single CNAM
+         // Impact Dataset reference.
   Else If (g_Tag = 'Creatures.Blood') Then
-         Begin
-           EvaluateByPath(e, m, 'NAM0');
-           EvaluateByPath(e, m, 'NAM1');
-         End
+         If wbIsOblivion Then
+           Begin
+             EvaluateByPath(e, m, 'NAM0');
+             EvaluateByPath(e, m, 'NAM1');
+           End
+         Else
+           EvaluateByPath(e, m, 'CNAM')
 
          // Bookmark: Creatures.Type
   Else If (g_Tag = 'Creatures.Type') Then
@@ -2853,14 +2949,16 @@ Begin
          EvaluateListAdd(e, m, 'Relations', 'Faction')
 
          // Bookmark: R.Relations.Change
-         // Match entries on Faction; only fire if a shared faction's Modifier or
-         // (Skyrim/FO4) Group Combat Reaction differs. Adds/removes go to
-         // R.Relations.Add / R.Relations.Remove.
+         // Match entries on Faction; only fire if a shared faction's Modifier
+         // (Oblivion) or Modifier + Group Combat Reaction (non-Oblivion) differs.
+         // Adds/removes go to R.Relations.Add / R.Relations.Remove.
+         // R.Relations is Oblivion/FO3/FNV only; Skyrim/FO4 never reach here
+         // in practice, but the non-Oblivion branch handles them defensively.
   Else If (g_Tag = 'R.Relations.Change') Then
-         If wbIsSkyrim Or wbIsFallout4 Then
-           DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier|Group Combat Reaction')
-         Else
+         If wbIsOblivion Then
            DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier')
+         Else
+           DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier|Group Combat Reaction')
 
          // Bookmark: R.Relations.Remove
   Else If (g_Tag = 'R.Relations.Remove') Then
@@ -2898,14 +2996,14 @@ Begin
          EvaluateListAdd(e, m, 'Relations', 'Faction')
 
          // Bookmark: Relations.Change
-         // Match entries on Faction; only fire if a shared faction's Modifier or
-         // (Skyrim/FO4) Group Combat Reaction differs. Adds/removes go to
-         // Relations.Add / Relations.Remove.
+         // Match entries on Faction; only fire if a shared faction's Modifier
+         // (Oblivion) or Modifier + Group Combat Reaction (every other game)
+         // differs. Adds/removes go to Relations.Add / Relations.Remove.
   Else If (g_Tag = 'Relations.Change') Then
-         If wbIsSkyrim Or wbIsFallout4 Then
-           DiffSubrecordList(e, m, 'Relations.Change', 'Relations', 'Faction', 'Modifier|Group Combat Reaction')
-         Else
+         If wbIsOblivion Then
            DiffSubrecordList(e, m, 'Relations.Change', 'Relations', 'Faction', 'Modifier')
+         Else
+           DiffSubrecordList(e, m, 'Relations.Change', 'Relations', 'Faction', 'Modifier|Group Combat Reaction')
 
          // Bookmark: Relations.Remove
   Else If (g_Tag = 'Relations.Remove') Then
