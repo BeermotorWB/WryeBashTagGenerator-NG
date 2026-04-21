@@ -35,7 +35,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-NG';
-  ScriptVersion = '1.9.1.0';
+  ScriptVersion = '1.9.1.2';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor';
   ScriptEmail   = 'NO SUPPORT';
@@ -562,10 +562,11 @@ Var
   sTags        : string;
   i            : integer;
   f            : IwbFile;
-  slScanResults: TStringList;
-  slFinalTags  : TStringList;
-  slNormExist  : TStringList;
-  slDepFound   : TStringList;
+  slScanResults : TStringList;
+  slFinalTags   : TStringList;
+  slNormExist   : TStringList;
+  slWriteDelta  : TStringList;
+  slDepFound    : TStringList;
   bWriteHeader : boolean;
   bHasWork     : boolean;
   bDoFileWrite : boolean;
@@ -610,10 +611,11 @@ Begin
 
   LogInfo('------------------------------------------------------------------------ RESULTS');
 
-  slScanResults := TStringList.Create;
-  slFinalTags   := TStringList.Create;
-  slNormExist   := TStringList.Create;
-  slDepFound    := TStringList.Create;
+  slScanResults  := TStringList.Create;
+  slFinalTags    := TStringList.Create;
+  slNormExist    := TStringList.Create;
+  slWriteDelta   := TStringList.Create;
+  slDepFound     := TStringList.Create;
   Try
     slScanResults.Sorted       := True;
     slScanResults.Duplicates   := dupIgnore;
@@ -624,6 +626,9 @@ Begin
     slNormExist.Sorted         := True;
     slNormExist.Duplicates     := dupIgnore;
     slNormExist.CaseSensitive  := False;
+    slWriteDelta.Sorted         := True;
+    slWriteDelta.Duplicates     := dupIgnore;
+    slWriteDelta.CaseSensitive  := False;
 
     kHeader := ElementBySignature(f, 'TES4');
     kDescription := ElementBySignature(kHeader, 'SNAM');
@@ -782,6 +787,48 @@ Begin
               LogInfo('No BashTags file found at: ' + g_BashTagsFilePath);
             LogInfo(FormatTags(slFinalTags, 'suggested tag overall:', 'suggested tags overall:', 'No suggested tags overall.'));
 
+            // Net-new and removed vs header / vs BashTags file. Use FormatTags so xEdit
+            // Messages renders the {{BASH:...}} block the same way as other RESULTS lines.
+
+            // Header adds: skip when delta == full final set (redundant — header was
+            // empty, or only contained tokens that normalize away). Still log the
+            // "No new tags..." message when delta is empty but final set is non-empty.
+            slWriteDelta.Clear;
+            StringListDifference(slFinalTags, slNormExist, slWriteDelta);
+            If slWriteDelta.Count <> slFinalTags.Count Then
+              LogInfo(FormatTags(slWriteDelta,
+                'new tag to be added to header:',
+                'new tags to be added to header:',
+                'No new tags to add to header.'));
+
+            // Header removals: literal tokens currently in {{BASH:...}} that will
+            // not be present after rewrite (alias rename, TagIsRemoved drop, etc.).
+            slWriteDelta.Clear;
+            StringListDifference(slExistingTags, slFinalTags, slWriteDelta);
+            LogInfo(FormatTags(slWriteDelta,
+              'tag to be removed from header:',
+              'tags to be removed from header:',
+              'No tags to be removed from header.'));
+
+            If g_BashTagsFileExists Then
+              Begin
+                // BashTags file adds.
+                slWriteDelta.Clear;
+                StringListDifference(slFinalTags, slBashTagsFileAdds, slWriteDelta);
+                LogInfo(FormatTags(slWriteDelta,
+                  'new tag to be added to BashTags file:',
+                  'new tags to be added to BashTags file:',
+                  'No new tags to add to BashTags file.'));
+
+                // BashTags file removals: existing additive tags that vanish on overwrite.
+                slWriteDelta.Clear;
+                StringListDifference(slBashTagsFileAdds, slFinalTags, slWriteDelta);
+                LogInfo(FormatTags(slWriteDelta,
+                  'tag to be removed from BashTags file:',
+                  'tags to be removed from BashTags file:',
+                  'No tags to be removed from BashTags file.'));
+              End;
+
             If g_ShowTagRelationships Then
               For i := 0 To Pred(slTagRelationships.Count) Do
                 LogInfo(slTagRelationships[i]);
@@ -801,6 +848,7 @@ Begin
     slScanResults.Free;
     slFinalTags.Free;
     slNormExist.Free;
+    slWriteDelta.Free;
     slDepFound.Free;
   End;
 
