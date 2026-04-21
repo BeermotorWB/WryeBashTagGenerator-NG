@@ -138,6 +138,14 @@ For `RACE` records, the script splits a single `R.ChangeSpells` emission into tw
 ## 1.9.2.0 - multifile
 - Added back multifile support, plus safeguards for independant plugin tagging.
 
+## 1.9.2.1 - bug fixes and deduplication
+- wbIsOblivion also tested for Oblivion Remastered, making explicitly testing for it redundant.
+- wbIsOblivionR tests were previously added in a way where operator precedence could mean incorrect predicates.
+- Moved making standardized sets to it's own function.
+- Moved repeated `ACBS\Template Flags` tests to function.
+- Removed unused variables.
+- Further deduplication and misc edge case fixes.
+
 ## Credits
 
 Original authors (please cite when referencing this script's lineage):
