@@ -155,10 +155,18 @@ For `RACE` records, the script splits a single `R.ChangeSpells` emission into tw
 ## 1.9.2.1 - bug fixes and deduplication
 - wbIsOblivion also tested for Oblivion Remastered, making explicitly testing for it redundant.
 - wbIsOblivionR tests were previously added in a way where operator precedence could mean incorrect predicates.
-- Moved making standardized sets to it's own function.
+- Moved making standardized sets to its own function.
 - Moved repeated `ACBS\\Template Flags` tests to function.
 - Removed unused variables.
 - Further deduplication and misc edge case fixes.
+
+## v1.9.3 — merged NG + Multifile line
+
+- **Merge point**: this release rolls the ongoing **1.9.1.x** quality fixes together with the **1.9.2.x** Multifile work into one coherent `dev` line.
+- **Two deliverables**:
+  - `WryeBashTagGenerator-NG.pas` — **single-plugin**, stricter user prompts so you do not silently pick a “winner” when the plugin header and `BashTags` file disagree.
+  - `WryeBashTagGenerator-Multi-NG.pas` — **batch** convenience: run across many selected plugins; mismatches between header and `BashTags` file **auto-skip** writes for that plugin and **continue** (see Multifile section above).
+- **Roadmap**: **v1.9.3** is the last **1.9** cut before promoting `dev` to the next **main**; the next `main` release is planned as **v2.0** (bump all script versions accordingly when that happens).
 
 ## Credits
 
