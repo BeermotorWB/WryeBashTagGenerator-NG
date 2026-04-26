@@ -1,69 +1,61 @@
 {
-  Generates bash tags for a selected plugin automatically.
-  Tag names aligned with Wrye Bash _tag_aliases / patcher tags; FO4 parity with WB FO4 patchers.
+  WryeBashTagGenerator-NG-debug : READ-ONLY DEBUG FORK
+  ----------------------------------------------------
+  Same detection logic as WryeBashTagGenerator-NG, but:
+
+    * NEVER writes to plugin headers. The single SetEditValue() call that
+      mutates SNAM is short-circuited, g_AddTags is forced False, and the
+      "Write suggested tags to header" checkbox is hidden in the prompt.
+    * Emits a per-decision trace to a log file. For every tag the script
+      considers on every record it touches, the log records the reason the
+      tag was SUGGESTED or SKIPPED (template-flag gate, conflict state,
+      no-difference, identical edit values, etc.).
+    * Three verbosity levels (set g_DebugLevel below):
+        DBG_PER_TAG       (1)  per-tag-per-record verdict only
+        DBG_PER_COMPARE   (2)  + every Compare*/Evaluate*/DiffSubrecordList call (DEFAULT)
+        DBG_LEAF_DIFFS    (3)  + actual differing edit-value snippets
+    * Optional filters (g_DebugFilterFormID / g_DebugFilterTag) restrict
+      output to a specific record (load-order FormID hex, e.g. '00013602')
+      and / or a specific tag (e.g. 'Actors.Factions').
+
+  Output file: <xEdit folder>\Edit Scripts\WryeBashTagGenerator-NG-debug.log
+  The full path is also written to xEdit Messages at the end of the run.
+
+  This file is a fork of WryeBashTagGenerator-NG.pas (base SHA: 0b20d04,
+  synced with the 1.9.2.1 cleanup/deduplication/fix pass).
+  Sync detection-logic changes manually; do not change behavior in this
+  file unless you also intend to debug an instrumentation bug.
 
   Games:    FO3/FNV/FO4/TES4/TES4R/TES5/SSE/Enderal/EnderalSE
   Requires: xEdit 4.1.4 or newer (script aborts on older builds)
   Hotkey:   F12
-
-  Lineage / citation:
-    - Original WryeBashTagGenerator: fireundubh.
-    - Multifile WryeBashTagGenerator variant: Xideta.
-    - WryeBashTagGenerator-NG (this fork): Beermotor.
-
-  NO SUPPORT - provided as an example. Do NOT contact fireundubh or Xideta
-  about this fork; they did not write it and are not responsible for its
-  behavior.
-
-  Heuristic Force* tags (opt-in checkbox; off by default):
-    - Actors.SpellsForceAdd       : override Spells is a strict superset of master Spells AND Actors.Spells already suggested.
-    - Actors.AIPackagesForceAdd   : override Packages is a strict superset of master Packages AND Actors.AIPackages already suggested.
-    - NpcFacesForceFullImport     : NPC differs from master in eyes (ENAM), hair (HNAM), AND face geometry simultaneously.
-  These heuristics may produce false positives on plugins that intentionally only add entries; review before committing.
-
-  Oblivion RACE Spells split (replaces v1.0 single-tag emission):
-    - removes present (master has SPEL not in override)  -> R.ChangeSpells (full override required to apply removal)
-    - adds-only                                          -> R.AddSpells    (additive merge sufficient; preserves other mods' adds)
-    - identical sets                                     -> nothing
-
-  Known coverage gaps (docs/wrye-bash-tags.md items not yet implemented):
-    - R.Stats (Skyrim): tag entirely unimplemented. Needs a dedicated
-      ProcessTag branch evaluating RACE DATA\Starting Health/Magicka/Stamina,
-      Base Carry Weight, Health/Magicka/Stamina Regen, Unarmed Damage,
-      Unarmed Reach; plus a dispatch under the Skyrim RACE block.
-    - Names on Skyrim-specific signatures: AVIF, CLFM, EXPL, HAZD, HDPT,
-      LCTN, MESG, MSTT, PERK, SCRL, SHOU, SNCT, TACT, TREE, WATR, WOOP
-      are listed in the Wrye Bash Skyrim Names table but have no dispatch
-      here. Needs a Skyrim-only ContainsStr block.
-    - Actors.ACBS (Skyrim field coverage): the non-FO4 branch evaluates
-      Oblivion/FO3/FNV-shaped paths (Fatigue, Calc min/max, DATA\Base
-      Health) that do not exist on Skyrim. Skyrim-specific fields
-      (Magicka Offset, Stamina Offset, Disposition Base, Health Offset,
-      Bleedout Override) are never checked. Needs a Skyrim branch with
-      xEdit-schema-verified paths.
-    - Actors.AIData (Skyrim field coverage): same class of problem —
-      non-FO4 branch checks Responsibility / Teaches / Maximum training
-      level / Buys-Sells-Services, none of which exist on Skyrim AIDT.
-      Missing: Morality, Mood, Assistance, Aggro radius fields.
-    - C.MiscFlags flag name: uses 'Can Travel From Here'; Wrye Bash docs
-      call it 'Can't Travel From Here / Invert Fast Travel Behavior'.
-      Needs verification against the actual xEdit flag-array schema
-      before changing.
 }
 
 
-Unit WryeBashTagGeneratorNG;
+Unit WryeBashTagGeneratorNGDebug;
 
 Uses 
   Dialogs;
 
 Const 
-  ScriptName    = 'WryeBashTagGenerator-NG';
-  ScriptVersion = '1.9.2.1';
+  ScriptName    = 'WryeBashTagGenerator-Multi-NG-debug';
+  ScriptVersion = '1.9.2.1-multi-debug';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor';
   ScriptEmail   = 'NO SUPPORT';
   ScaleFactor   = Screen.PixelsPerInch / 96;
+
+  // Verbosity levels for the debug trace.
+  DBG_OFF         = 0;   // no debug output (effectively production)
+  DBG_PER_TAG     = 1;   // one line per (record, tag) verdict
+  DBG_PER_COMPARE = 2;   // + every Compare*/Evaluate*/DiffSubrecordList call
+  DBG_LEAF_DIFFS  = 3;   // + actual differing edit-value snippets
+
+  // ---- Edit these to tune the trace -------------------------------------
+  DebugLevel       = DBG_PER_COMPARE;  // 1=per-tag, 2=per-compare, 3=leaf-diffs
+  DebugFilterForm  = '';               // load-order FormID hex (e.g. '00013602'); '' = no filter
+  DebugFilterTag   = '';               // exact tag name (e.g. 'Actors.Factions'); '' = no filter
+  // -----------------------------------------------------------------------
 
 
 Var 
@@ -75,16 +67,6 @@ Var
   slSuggestedTags     : TStringList;
   slDeprecatedTags : TStringList;
 
-  // BashTags file (Data\BashTags\<plugin>.txt) read state
-  slBashTagsFileAdds    : TStringList;
-  slBashTagsFileRemoves : TStringList;
-  slBashTagsFileLines   : TStringList;
-  g_BashTagsFilePath    : string;
-  g_BashTagsFileExists  : boolean;
-
-  // User-requested run abort (set via the header/BashTags discrepancy dialog)
-  g_AbortRun       : boolean;
-
   g_FileName       : string;
   g_Tag            : string;
   g_AddTags        : boolean;
@@ -93,13 +75,21 @@ Var
   g_ShowTagRelationships  : boolean;
   g_HeuristicForceTags    : boolean;
 
-  // Single-plugin enforcement: lock onto the first file we see. If multiple
-  // plugins are selected in xEdit, the first is processed and the run exits
-  // with an error in Finalize.
-  g_TargetFile     : IwbFile;
-  g_TargetFileName : string;
-  g_MultiFileError : boolean;
-  g_OtherFiles     : TStringList;
+  // User-requested run abort (set via the header/BashTags discrepancy dialog).
+  // Release-script path; debug fork does not mutate headers, but honours the
+  // flag so an abort raised in a release run can't be lost during a debug run.
+  g_AbortRun       : boolean;
+
+  // ---- Debug-fork state ----------------------------------------------
+  g_DebugLogPath          : string;             // resolved log file path
+  g_DebugCurrentRecord    : IwbMainRecord;      // record currently being processed
+  g_DebugCurrentTag       : string;             // tag currently being considered
+  // xEdit's PascalScript (JvInterpreter) has no AssignFile/TextFile/WriteLn -
+  // file IO is buffered through a TStringList and flushed via SaveToFile.
+  g_DebugLog              : TStringList;        // in-memory log buffer
+  g_DebugLogReady         : boolean;            // True while buffer is usable
+  g_DebugIndent           : integer;            // visual nesting (0 = top)
+  g_DebugSuggestedSnap    : integer;            // slSuggestedTags.Count snapshot at start of a tag
 
 // Oblivion (vanilla and Remastered). Detection logic treats both identically,
 // so this is the predicate to use anywhere Oblivion-specific behavior applies.
@@ -165,6 +155,53 @@ Begin
 End;
 
 
+Function IsStockMasterFile(Const AFileName: string): boolean;
+Begin
+  Result := False;
+
+  If wbIsSkyrim Then
+    Begin
+      Result :=
+        SameText(AFileName, 'Skyrim.esm')
+        Or SameText(AFileName, 'Update.esm')
+        Or SameText(AFileName, 'Dawnguard.esm')
+        Or SameText(AFileName, 'HearthFires.esm')
+        Or SameText(AFileName, 'Dragonborn.esm');
+      Exit;
+    End;
+
+  If wbIsOblivion Then
+    Begin
+      Result := SameText(AFileName, 'Oblivion.esm');
+      Exit;
+    End;
+
+  If wbIsFallout3 Then
+    Begin
+      Result := SameText(AFileName, 'Fallout3.esm');
+      Exit;
+    End;
+  If wbIsFalloutNV Then
+    Begin
+      Result := SameText(AFileName, 'FalloutNV.esm');
+      Exit;
+    End;
+
+  If wbIsFallout4 Then
+    Begin
+      Result :=
+        SameText(AFileName, 'Fallout4.esm')
+        Or SameText(AFileName, 'DLCRobot.esm')
+        Or SameText(AFileName, 'DLCworkshop01.esm')
+        Or SameText(AFileName, 'DLCCoast.esm')
+        Or SameText(AFileName, 'DLCworkshop02.esm')
+        Or SameText(AFileName, 'DLCworkshop03.esm')
+        Or SameText(AFileName, 'DLCNukaWorld.esm');
+      Exit;
+    End;
+End;
+
+
 // Path to the SPLO array on NPC_/CREA and RACE records. Oblivion calls it
 // 'Spells'; every other supported game calls it 'Actor Effects'.
 Function ActorSpellArrayPath: string;
@@ -202,6 +239,150 @@ End;
 Procedure LogError(AText: String);
 Begin
   AddMessage('[ERRO] ' + AText);
+End;
+
+
+// ===========================================================================
+// Debug-fork instrumentation
+// ===========================================================================
+
+Function DbgRecordTag: string;
+Var
+  sFid : string;
+  sEid : string;
+  sSig : string;
+  sFil : string;
+Begin
+  If Not Assigned(g_DebugCurrentRecord) Then
+    Begin
+      Result := '[<no-record>]';
+      Exit;
+    End;
+  sSig := Signature(g_DebugCurrentRecord);
+  sFid := IntToHex(GetLoadOrderFormID(g_DebugCurrentRecord), 8);
+  sEid := EditorID(g_DebugCurrentRecord);
+  sFil := GetFileName(GetFile(g_DebugCurrentRecord));
+  If sEid = '' Then
+    Result := Format('[%s:%s @ %s]', [sSig, sFid, sFil])
+  Else
+    Result := Format('[%s:%s "%s" @ %s]', [sSig, sFid, sEid, sFil]);
+End;
+
+
+Function DbgFiltered: boolean;
+Var
+  sFid : string;
+Begin
+  Result := False;
+  If DebugFilterTag <> '' Then
+    If Not SameText(g_DebugCurrentTag, DebugFilterTag) Then
+      Begin Result := True; Exit; End;
+  If DebugFilterForm <> '' Then
+    Begin
+      If Not Assigned(g_DebugCurrentRecord) Then
+        Begin Result := True; Exit; End;
+      sFid := IntToHex(GetLoadOrderFormID(g_DebugCurrentRecord), 8);
+      If Not SameText(sFid, DebugFilterForm) Then
+        Result := True;
+    End;
+End;
+
+
+Procedure DbgWriteRaw(Const s: string);
+Var
+  sIndent : string;
+  i       : integer;
+Begin
+  If Not g_DebugLogReady Then Exit;
+  sIndent := '';
+  For i := 1 To g_DebugIndent Do
+    sIndent := sIndent + '  ';
+  Try
+    g_DebugLog.Add(sIndent + s);
+  Except
+    // Swallow buffer errors - debug-only path, never abort the script.
+  End;
+End;
+
+
+Procedure DbgLog(ALevel: integer; Const s: string);
+Begin
+  If DebugLevel < ALevel Then Exit;
+  If DbgFiltered Then Exit;
+  DbgWriteRaw(s);
+End;
+
+
+Procedure DbgLogUnfiltered(ALevel: integer; Const s: string);
+// Bypasses tag/form filter; used for record + file headers so the log
+// is still readable when filters are active.
+Begin
+  If DebugLevel < ALevel Then Exit;
+  DbgWriteRaw(s);
+End;
+
+
+Function DbgShortVal(Const s: string): string;
+// Edit values can be very long (e.g. full Items array dumps). Trim for log.
+Begin
+  If Length(s) > 200 Then
+    Result := Copy(s, 1, 197) + '...'
+  Else
+    Result := s;
+End;
+
+
+Function DbgEdv(AElement: IInterface): string;
+// Safe GetEditValue for nil-tolerant logging.
+Begin
+  If Not Assigned(AElement) Then
+    Result := '<nil>'
+  Else
+    Result := DbgShortVal(GetEditValue(AElement));
+End;
+
+
+Function DbgPath(AElement: IInterface): string;
+// Path relative to the containing record (xEdit's Path() is full).
+Var
+  s : string;
+Begin
+  If Not Assigned(AElement) Then
+    Begin Result := '<nil>'; Exit; End;
+  s := Path(AElement);
+  // Path() typically starts with the record signature; strip it for brevity.
+  If Length(s) > 5 Then
+    Result := Copy(s, 6, Length(s))
+  Else
+    Result := s;
+End;
+
+
+Procedure DbgSuggestSnapshot;
+Begin
+  g_DebugSuggestedSnap := slSuggestedTags.Count;
+End;
+
+
+Function DbgWasSuggested: boolean;
+Begin
+  Result := slSuggestedTags.Count > g_DebugSuggestedSnap;
+End;
+
+
+Function DbgConflictName(AState: TConflictThis): string;
+Begin
+  Case AState Of
+    caUnknown          : Result := 'caUnknown';
+    caOnlyOne          : Result := 'caOnlyOne';
+    caNoConflict       : Result := 'caNoConflict';
+    caConflictBenign   : Result := 'caConflictBenign';
+    caOverride         : Result := 'caOverride';
+    caConflict         : Result := 'caConflict';
+    caConflictCritical : Result := 'caConflictCritical';
+  Else
+    Result := 'caState_' + IntToStr(Ord(AState));
+  End;
 End;
 
 
@@ -289,7 +470,7 @@ End;
 
 Procedure NormalizeBashTagsInPlace(sl: TStringList);
 
-Var 
+Var
   tmp : TStringList;
   i   : integer;
 Begin
@@ -307,7 +488,7 @@ End;
 
 Function TagsCommaTextEqual(slA: TStringList; slB: TStringList): boolean;
 
-Var 
+Var
   tA : TStringList;
   tB : TStringList;
 Begin
@@ -333,164 +514,69 @@ Begin
 End;
 
 
-// Reads Data\BashTags\<plugin>.txt (Wrye Bash format) into:
-//   slBashTagsFileAdds    - bare tags (canonical, normalized)
-//   slBashTagsFileRemoves - tag names that were prefixed with '-' in the file
-//   slBashTagsFileLines   - raw original lines, preserved for in-place backup
-// '#' starts a comment to end of line; tags are comma-separated and may span lines.
-Procedure ReadBashTagsFile(Const APath: string);
-
-Var 
-  i, k     : integer;
-  iHash    : integer;
-  sLine    : string;
-  sEntry   : string;
-  slParts  : TStringList;
-Begin
-  slBashTagsFileAdds.Clear;
-  slBashTagsFileRemoves.Clear;
-  slBashTagsFileLines.Clear;
-  g_BashTagsFileExists := FileExists(APath);
-  If Not g_BashTagsFileExists Then Exit;
-
-  slBashTagsFileLines.LoadFromFile(APath);
-
-  slParts := TStringList.Create;
-  Try
-    slParts.StrictDelimiter := True;
-    slParts.Delimiter       := ',';
-    For i := 0 To Pred(slBashTagsFileLines.Count) Do
-      Begin
-        sLine := slBashTagsFileLines[i];
-        iHash := Pos('#', sLine);
-        If iHash > 0 Then
-          sLine := Copy(sLine, 1, iHash - 1);
-        sLine := Trim(sLine);
-        If sLine = '' Then Continue;
-        slParts.DelimitedText := sLine;
-        For k := 0 To Pred(slParts.Count) Do
-          Begin
-            sEntry := Trim(slParts[k]);
-            If sEntry = '' Then Continue;
-            If sEntry[1] = '-' Then
-              slBashTagsFileRemoves.Add(Trim(Copy(sEntry, 2, Length(sEntry) - 1)))
-            Else
-              slBashTagsFileAdds.Add(sEntry);
-          End;
-      End;
-  Finally
-    slParts.Free;
-  End;
-
-  NormalizeBashTagsInPlace(slBashTagsFileAdds);
-  NormalizeBashTagsInPlace(slBashTagsFileRemoves);
-End;
-
-
-// Writes APath as a Wrye-Bash-readable BashTags file:
-//   - '# Generated by ScriptName vScriptVersion'
-//   - if ABackup and AOriginalLines is non-empty, the original contents are
-//     preserved as commented lines wrapped in begin/end markers
-//   - one comma-separated tag line containing ANewLine
-Procedure WriteBashTagsFileWithBackup(Const APath: string;
-                                      Const ANewLine: string;
-                                      Const AOriginalLines: TStringList;
-                                      ABackup: boolean);
-
-Var 
-  slOut : TStringList;
-  i     : integer;
-Begin
-  ForceDirectories(ExtractFilePath(APath));
-  slOut := TStringList.Create;
-  Try
-    slOut.Add('# Generated by ' + ScriptName + ' v' + ScriptVersion);
-    If ABackup And (AOriginalLines.Count > 0) Then
-      Begin
-        slOut.Add('# --- Backup of previous file contents (' + DateTimeToStr(Now) + ') ---');
-        For i := 0 To Pred(AOriginalLines.Count) Do
-          slOut.Add('# ' + AOriginalLines[i]);
-        slOut.Add('# --- End backup ---');
-      End;
-    slOut.Add(ANewLine);
-    slOut.SaveToFile(APath);
-  Finally
-    slOut.Free;
-  End;
-End;
-
-
-// True iff the normalized tag set in the {{BASH:...}} header block differs
-// from the additive set in the existing BashTags file.
-Function HeaderBashTagsDiffer: boolean;
-
-Var 
-  slA : TStringList;
-  slB : TStringList;
-Begin
-  slA := MakeTagSet;
-  slB := MakeTagSet;
-  Try
-    slA.AddStrings(slExistingTags);
-    slB.AddStrings(slBashTagsFileAdds);
-    NormalizeBashTagsInPlace(slA);
-    NormalizeBashTagsInPlace(slB);
-    Result := Not TagsCommaTextEqual(slA, slB);
-  Finally
-    slA.Free;
-    slB.Free;
-  End;
-End;
-
-
-// Show the header/BashTags discrepancy warning with Skip/Abort buttons.
-// Returns True if the user chose Abort (halt the entire run);
-// returns False if the user chose Ignore (skip writes for this plugin, continue).
-// Writes are suppressed for the current plugin either way — the result only
-// decides whether subsequent plugins are processed.
-Function NotifyHeaderBashTagsDiscrepancy: boolean;
-
-Var
-  iResult : integer;
-Begin
-  iResult := MessageDlg(
-    'The {{BASH:...}} block in the plugin header and the existing BashTags '
-    + 'file disagree on tags for plugin:'#13#10
-    + '    ' + g_FileName + #13#10#13#10
-    + 'This script does not reconcile the two; please fix the discrepancy '
-    + 'manually.'#13#10#13#10
-    + 'Ignore = skip writes for this plugin, continue with the next.'#13#10
-    + 'Abort  = halt the run; no further plugins will be processed.',
-    mtWarning, [mbIgnore, mbAbort], 0);
-  Result := (iResult = mrAbort);
-End;
-
-
-Function PromptApproveBashTagsBackup: boolean;
-Begin
-  Result := MessageDlg(
-    'About to back up the existing BashTags file in-place (the original lines will '
-    + 'be commented out at the top of the file) and overwrite it with the new tag '
-    + 'list:'#13#10 + g_BashTagsFilePath + #13#10#13#10
-    + 'Approve?  (No = discard the change, leave the existing file intact, terminate normally.)',
-    mtConfirmation, [mbYes, mbNo], 0) = mrYes;
-End;
-
-
 Function Initialize: integer;
+Var
+  sLogDir : string;
 Begin
   ClearMessages();
 
   LogInfo('--------------------------------------------------------------------------------');
   LogInfo(ScriptName + ' v' + ScriptVersion + ' by ' + ScriptAuthor + ' <' + ScriptEmail + '>');
+  LogInfo('READ-ONLY DEBUG FORK - this script never writes to plugin headers.');
   LogInfo('--------------------------------------------------------------------------------');
   LogInfo(DataPath);
 
+  // ---- Open the debug trace buffer ------------------------------------
+  // xEdit's PascalScript (JvInterpreter) does not register TextFile,
+  // AssignFile, Rewrite, WriteLn, Flush or CloseFile. The only practical
+  // way to write text to disk from a script is TStringList.SaveToFile.
+  // We therefore buffer all trace lines in g_DebugLog and flush via
+  // SaveToFile (once per file in Process(), and again in Finalize).
+  sLogDir          := ProgramPath + 'Edit Scripts\';
+  g_DebugLogPath   := sLogDir + 'WryeBashTagGenerator-NG-debug.log';
+  g_DebugLogReady  := False;
+  g_DebugIndent    := 0;
 
+  // Tell the user up-front exactly where we will (try to) write, so they
+  // can find it even if Finalize never runs (script abort, exception, etc).
+  AddMessage('');
+  AddMessage('================================================================================');
+  AddMessage('Debug trace target:');
+  AddMessage('  ' + g_DebugLogPath);
+  AddMessage('================================================================================');
+
+  Try
+    g_DebugLog := TStringList.Create;
+    g_DebugLog.Add('# ' + ScriptName + ' v' + ScriptVersion);
+    g_DebugLog.Add('# Generated: ' + DateTimeToStr(Now));
+    g_DebugLog.Add('# DebugLevel=' + IntToStr(DebugLevel) +
+                   '  FilterForm="' + DebugFilterForm + '"' +
+                   '  FilterTag="'  + DebugFilterTag  + '"');
+    g_DebugLog.Add('');
+    // Probe write to surface permission errors NOW, not at the end of a
+    // 30-minute run. SaveToFile will raise if the path is unwritable.
+    g_DebugLog.SaveToFile(g_DebugLogPath);
+    g_DebugLogReady := True;
+    LogInfo('Debug trace OPEN: ' + g_DebugLogPath);
+  Except
+    on E: Exception Do
+      Begin
+        LogWarn('Could not initialize debug log buffer: ' +
+                g_DebugLogPath + ' [' + E.ClassName + ': ' + E.Message +
+                '] (continuing without trace)');
+        g_DebugLogReady := False;
+      End;
+  End;
+
+  // Read-only enforcement: g_AddTags AND g_AddFile are forced False here,
+  // both prompt checkboxes are disabled in ShowPrompt, the only SetEditValue()
+  // call in Process() is gated behind 'If False And bWriteHeader Then', and
+  // the BashTags-file write block is replaced by a defensive LogWarn.
   g_AddTags  := False;
   g_AddFile  := False;
-  g_LogTests             := True;
-  g_ShowTagRelationships := True;
+  // Multi defaults: keep log size down; use debug filters instead of dumping everything.
+  g_LogTests             := False;
+  g_ShowTagRelationships := False;
   g_HeuristicForceTags   := False;
 
   slLog := TStringList.Create;
@@ -516,27 +602,7 @@ Begin
   slDeprecatedTags.CommaText :=
     'Actors.Perks.Add,Actors.Perks.Change,Actors.Perks.Remove,Body-F,Body-M,Body-Size-F,Body-Size-M,C.GridFlags,Derel,Eyes,Eyes-D,Eyes-E,Eyes-R,Factions,Hair,Invent,InventOnly,Merge,Npc.EyesOnly,Npc.HairOnly,NpcFaces,R.Relations,Relations,ScriptContents,Voice-F,Voice-M';
 
-  // BashTags file read state
-  slBashTagsFileAdds    := MakeTagSet;
-  slBashTagsFileRemoves := MakeTagSet;
-
-  slBashTagsFileLines := TStringList.Create;
-  slBashTagsFileLines.Sorted     := False;
-  slBashTagsFileLines.Duplicates := dupAccept;
-
-  g_BashTagsFilePath   := '';
-  g_BashTagsFileExists := False;
-
   g_AbortRun := False;
-
-  // Single-plugin lock
-  g_TargetFile     := Nil;
-  g_TargetFileName := '';
-  g_MultiFileError := False;
-  g_OtherFiles     := TStringList.Create;
-  g_OtherFiles.Sorted        := True;
-  g_OtherFiles.Duplicates    := dupIgnore;
-  g_OtherFiles.CaseSensitive := False;
 
   If wbVersionNumber < MinXEditVer Then
     Begin
@@ -594,63 +660,44 @@ End;
 
 Function Process(input: IInterface): integer;
 
-Var 
+Var
   kDescription : IwbElement;
   kHeader      : IwbElement;
   sDescription : string;
   sTags        : string;
   i            : integer;
   f            : IwbFile;
-  slFinalTags   : TStringList;
-  slNormExist   : TStringList;
-  slWriteDelta  : TStringList;
-  slDepFound    : TStringList;
+  slFinalTags  : TStringList;
+  slNormExist  : TStringList;
+  slDepFound   : TStringList;
   bWriteHeader : boolean;
   bHasWork     : boolean;
-  bDoFileWrite : boolean;
 Begin
 
   If (ElementType(input) = etMainRecord) Then
     exit;
 
-  f := GetFile(input);
-
-  // Single-plugin enforcement: lock onto the first file we see.
-  // Any additional distinct file flips an error flag; Finalize then aborts the run.
-  If Not Assigned(g_TargetFile) Then
-    Begin
-      g_TargetFile     := f;
-      g_TargetFileName := GetFileName(f);
-    End
-  Else If Not SameText(GetFileName(f), g_TargetFileName) Then
-    Begin
-      g_MultiFileError := True;
-      If g_OtherFiles.IndexOf(GetFileName(f)) = -1 Then
-        g_OtherFiles.Add(GetFileName(f));
-      Exit;
-    End;
-
-  // Honour prior user-requested abort: once the discrepancy dialog sets
-  // g_AbortRun, every remaining per-file Process invocation returns immediately.
+  // Honour prior user-requested abort.
   If g_AbortRun Then
     Exit;
+
+  f := GetFile(input);
   g_FileName := GetFileName(f);
 
-  // Start-of-Process state reset. Each selected plugin is tagged independently;
-  // pre-clearing here guarantees no leakage from a prior plugin even if that
-  // plugin's Process exited early (exception, discrepancy skip, etc.) before the
-  // end-of-Process clears ran.
+  // Start-of-Process state reset — per-plugin independence.
+  // Mirrors the release script; see its Process for the rationale.
   slLog.Clear;
   slTagRelationships.Clear;
   slSuggestedTags.Clear;
   slExistingTags.Clear;
   slDifferentTags.Clear;
   slBadTags.Clear;
-  slBashTagsFileAdds.Clear;
-  slBashTagsFileRemoves.Clear;
-  slBashTagsFileLines.Clear;
-  g_BashTagsFilePath   := '';
-  g_BashTagsFileExists := False;
+
+  // Per-file banner in the debug trace.
+  DbgLogUnfiltered(DBG_PER_TAG, '');
+  DbgLogUnfiltered(DBG_PER_TAG, '================================================================================');
+  DbgLogUnfiltered(DBG_PER_TAG, '== FILE: ' + g_FileName);
+  DbgLogUnfiltered(DBG_PER_TAG, '================================================================================');
 
   AddMessage(#10);
   LogInfo('=== ' + g_FileName + ' ===');
@@ -672,7 +719,6 @@ Begin
 
   slFinalTags  := MakeTagSet;
   slNormExist  := MakeTagSet;
-  slWriteDelta := MakeTagSet;
   slDepFound   := TStringList.Create;
   Try
     kHeader := ElementBySignature(f, 'TES4');
@@ -684,9 +730,6 @@ Begin
 
     slExistingTags.Clear;
     slExistingTags.CommaText := RegExMatchGroup('{{BASH:(.*?)}}', sDescription, 1);
-
-    g_BashTagsFilePath := DataPath + 'BashTags\' + ChangeFileExt(g_FileName, '.txt');
-    ReadBashTagsFile(g_BashTagsFilePath);
 
     slDepFound.Clear;
     StringListIntersection(slExistingTags, slDeprecatedTags, slDepFound);
@@ -707,7 +750,7 @@ Begin
       LogInfo('No tags are suggested for this plugin.')
     Else
       Begin
-        bWriteHeader := g_AddTags;
+        bWriteHeader := False;  // READ-ONLY DEBUG FORK: header writes hard-disabled
         If bWriteHeader And (slDepFound.Count > 0) Then
           If Not PromptDeprecatedHeaderUpdate Then
             Begin
@@ -729,62 +772,12 @@ Begin
 
         If (slSuggestedTags.Count = 0) And (slDepFound.Count = 0) And TagsCommaTextEqual(slFinalTags, slNormExist) And Not g_AddFile Then
           Begin
-            LogInfo(FormatTags(slExistingTags,
-              'existing tag found in header:',
-              'existing tags found in header:',
-              'No existing tags found in header.'));
-            If g_BashTagsFileExists Then
-              Begin
-                LogInfo(FormatTags(slBashTagsFileAdds,
-                  'existing tag found in BashTags file:',
-                  'existing tags found in BashTags file:',
-                  'No existing tags found in BashTags file.'));
-                If slBashTagsFileRemoves.Count > 0 Then
-                  LogInfo(FormatTags(slBashTagsFileRemoves,
-                    'tag explicitly removed (-) in BashTags file:',
-                    'tags explicitly removed (-) in BashTags file:',
-                    ''));
-              End
-            Else
-              LogInfo('No BashTags file found at: ' + g_BashTagsFilePath);
+            LogInfo(FormatTags(slExistingTags, 'existing tag found:', 'existing tags found:', 'No existing tags found.'));
             LogInfo(FormatTags(slSuggestedTags, 'suggested tag:', 'suggested tags:', 'No suggested tags.'));
             LogWarn('No tags to add.' + #13#10);
           End
         Else
           Begin
-            // Resolve BashTags-file prompts BEFORE the header write so the
-            // discrepancy "No" path can also suppress the header rewrite.
-            bDoFileWrite := False;
-            If g_AddFile Then
-              Begin
-                bDoFileWrite := True;
-                If g_BashTagsFileExists Then
-                  Begin
-                    If TagsCommaTextEqual(slFinalTags, slBashTagsFileAdds) Then
-                      Begin
-                        LogInfo('BashTags file already up to date; no changes to write.');
-                        bDoFileWrite := False;
-                      End
-                    Else If HeaderBashTagsDiffer Then
-                      Begin
-                        If NotifyHeaderBashTagsDiscrepancy Then
-                          Begin
-                            g_AbortRun := True;
-                            LogWarn('Header/BashTags discrepancy detected; user aborted run. No further plugins will be processed.');
-                          End
-                        Else
-                          LogWarn('Header/BashTags discrepancy detected; skipping writes for this plugin. Continuing with remaining plugins.');
-                        bDoFileWrite := False;
-                        bWriteHeader := False;
-                      End
-                    Else If Not PromptApproveBashTagsBackup Then
-                      Begin
-                        LogInfo('User discarded BashTags update; existing file left intact.');
-                        bDoFileWrite := False;
-                      End;
-                  End;
-              End;
-
             If bWriteHeader Then
               Begin
                 kDescription := ElementBySignature(kHeader, 'SNAM');
@@ -804,7 +797,9 @@ Begin
                            sDescription := RegExReplace('{{BASH:.*?}}', sTags, sDescription);
                        End;
 
-                SetEditValue(kDescription, sDescription);
+                // READ-ONLY DEBUG FORK: header write deliberately suppressed.
+                // SetEditValue(kDescription, sDescription);
+                LogWarn('READ-ONLY DEBUG FORK: header write suppressed (would have written: ' + sDescription + ')');
 
                 LogInfo(FormatTags(slBadTags,       'bad tag removed:',          'bad tags removed:',          'No bad tags found.'));
                 LogInfo(FormatTags(slDifferentTags, 'tag added to file header:', 'tags added to file header:', 'No tags added.'));
@@ -815,87 +810,26 @@ Begin
                 LogInfo(FormatTags(slDifferentTags, 'suggested tag to add:',  'suggested tags to add:',  'No suggested tags to add.'));
               End;
 
-            LogInfo(FormatTags(slExistingTags,
-              'existing tag found in header:',
-              'existing tags found in header:',
-              'No existing tags found in header.'));
-            If g_BashTagsFileExists Then
-              Begin
-                LogInfo(FormatTags(slBashTagsFileAdds,
-                  'existing tag found in BashTags file:',
-                  'existing tags found in BashTags file:',
-                  'No existing tags found in BashTags file.'));
-                If slBashTagsFileRemoves.Count > 0 Then
-                  LogInfo(FormatTags(slBashTagsFileRemoves,
-                    'tag explicitly removed (-) in BashTags file:',
-                    'tags explicitly removed (-) in BashTags file:',
-                    ''));
-              End
-            Else
-              LogInfo('No BashTags file found at: ' + g_BashTagsFilePath);
+            LogInfo(FormatTags(slExistingTags, 'existing tag found:', 'existing tags found:', 'No existing tags found.'));
             LogInfo(FormatTags(slFinalTags, 'suggested tag overall:', 'suggested tags overall:', 'No suggested tags overall.'));
-
-            // Net-new and removed vs header / vs BashTags file. Use FormatTags so xEdit
-            // Messages renders the {{BASH:...}} block the same way as other RESULTS lines.
-
-            // Header adds: skip when delta == full final set (redundant — header was
-            // empty, or only contained tokens that normalize away). Still log the
-            // "No new tags..." message when delta is empty but final set is non-empty.
-            slWriteDelta.Clear;
-            StringListDifference(slFinalTags, slNormExist, slWriteDelta);
-            If slWriteDelta.Count <> slFinalTags.Count Then
-              LogInfo(FormatTags(slWriteDelta,
-                'new tag to be added to header:',
-                'new tags to be added to header:',
-                'No new tags to add to header.'));
-
-            // Header removals: literal tokens currently in {{BASH:...}} that will
-            // not be present after rewrite (alias rename, TagIsRemoved drop, etc.).
-            slWriteDelta.Clear;
-            StringListDifference(slExistingTags, slFinalTags, slWriteDelta);
-            LogInfo(FormatTags(slWriteDelta,
-              'tag to be removed from header:',
-              'tags to be removed from header:',
-              'No tags to be removed from header.'));
-
-            If g_BashTagsFileExists Then
-              Begin
-                // BashTags file adds.
-                slWriteDelta.Clear;
-                StringListDifference(slFinalTags, slBashTagsFileAdds, slWriteDelta);
-                LogInfo(FormatTags(slWriteDelta,
-                  'new tag to be added to BashTags file:',
-                  'new tags to be added to BashTags file:',
-                  'No new tags to add to BashTags file.'));
-
-                // BashTags file removals: existing additive tags that vanish on overwrite.
-                slWriteDelta.Clear;
-                StringListDifference(slBashTagsFileAdds, slFinalTags, slWriteDelta);
-                LogInfo(FormatTags(slWriteDelta,
-                  'tag to be removed from BashTags file:',
-                  'tags to be removed from BashTags file:',
-                  'No tags to be removed from BashTags file.'));
-              End;
 
             If g_ShowTagRelationships Then
               For i := 0 To Pred(slTagRelationships.Count) Do
                 LogInfo(slTagRelationships[i]);
 
-            If bDoFileWrite Then
-              Begin
-                WriteBashTagsFileWithBackup(g_BashTagsFilePath,
-                                            slFinalTags.DelimitedText,
-                                            slBashTagsFileLines,
-                                            g_BashTagsFileExists);
-                LogInfo('Finished writing bash tags to BashTags file (canonical names).');
-              End;
+            // Read-only debug fork: never write a BashTags file.
+            // The 'Write suggested tags to file' checkbox is disabled in
+            // ShowPrompt and g_AddFile is forced False in Initialize, so
+            // this branch is unreachable; the LogWarn is a defense-in-depth
+            // canary in case someone wires it back up.
+            If g_AddFile Then
+              LogWarn('READ-ONLY DEBUG FORK: refused to write to BashTags file (use the production script).');
           End;
       End;
 
   Finally
     slFinalTags.Free;
     slNormExist.Free;
-    slWriteDelta.Free;
     slDepFound.Free;
   End;
 
@@ -905,6 +839,15 @@ Begin
   slExistingTags.Clear;
   slDifferentTags.Clear;
   slBadTags.Clear;
+
+  // Crash-safety flush: write the buffer to disk after every plugin so a
+  // mid-run abort still leaves a usable partial trace on disk.
+  If g_DebugLogReady Then
+    Try
+      g_DebugLog.SaveToFile(g_DebugLogPath);
+    Except
+      // ignore - Finalize will report the error
+    End;
 
   AddMessage(#10);
 End;
@@ -931,12 +874,24 @@ Var
   ConflictState : TConflictThis;
   iFormID       : integer;
 Begin
-  ConflictState := ConflictAllForMainRecord(e);
+  g_DebugCurrentRecord := e;
+  ConflictState        := ConflictAllForMainRecord(e);
+
+  DbgLogUnfiltered(DBG_PER_TAG, '');
+  DbgLogUnfiltered(DBG_PER_TAG, Format('--- RECORD %s  [conflict=%s] ---',
+    [DbgRecordTag, DbgConflictName(ConflictState)]));
 
   If (ConflictState = caUnknown)
      Or (ConflictState = caOnlyOne)
      Or (ConflictState = caNoConflict) Then
-    Exit;
+    Begin
+      DbgLogUnfiltered(DBG_PER_TAG, Format('  ProcessRecord: SKIP entire record (conflict=%s; no override conflict to analyze)',
+        [DbgConflictName(ConflictState)]));
+      g_DebugCurrentRecord := Nil;
+      Exit;
+    End;
+
+  Try
 
   // exit if the record should not be processed
   If SameText(g_FileName, 'Dawnguard.esm') Then
@@ -952,6 +907,12 @@ Begin
 
   // get master record if record is an override
   o := Master(e);
+
+  If Not Assigned(o) Then
+    Exit;
+
+  While Assigned(o) And (Not IsStockMasterFile(GetFileName(GetFile(o)))) Do
+    o := Master(o);
 
   If Not Assigned(o) Then
     Exit;
@@ -1003,13 +964,6 @@ Begin
 
       Else If sSignature = 'SPEL' Then
              ProcessTag('SpellStats', e, o);
-
-      // Scripts on Oblivion: SCRI subrecord in the signatures below. Oblivion
-      // lacks the template flag system, so this is a plain signature check
-      // (no 'Use Script' gate like FO3/FNV/Skyrim). Independent If — per-tag
-      // dedup is handled inside ProcessTag.
-      If ContainsStr('ACTI ALCH APPA ARMO BOOK CLOT CONT CREA DOOR FLOR FURN INGR KEYM LIGH LVLC MISC NPC_ QUST SGST SLGM WEAP', sSignature) Then
-        ProcessTag('Scripts', e, o);
     End;
 
   // -------------------------------------------------------------------------------
@@ -1031,7 +985,7 @@ Begin
           ProcessTag('C.SkyLighting', e, o);
         End;
 
-      If ContainsStr('ACTI ALCH AMMO ARMO BOOK FLOR FURN INGR KEYM LCTN MGEF MISC NPC_ RACE SCRL SLGM SPEL TACT WEAP', sSignature) Then
+      If ContainsStr('ACTI ALCH AMMO ARMO BOOK FLOR FURN INGR KEYM LCTN MGEF MISC NPC_ SCRL SLGM SPEL TACT WEAP', sSignature) Then
         ProcessTag('Keywords', e, o);
 
       If sSignature = 'FACT' Then
@@ -1069,15 +1023,6 @@ Begin
       // -> R.ChangeSpells) using the per-game SPLO array path.
       If sSignature = 'RACE' Then
         ProcessRaceSpells(e, o);
-
-      // COBJ (Constructible Object) inventory on Skyrim+. Uses the same
-      // 'Items' / CNTO shape as CONT, so the standard Invent.* handlers apply.
-      If sSignature = 'COBJ' Then
-        Begin
-          ProcessTag('Invent.Add', e, o);
-          ProcessTag('Invent.Change', e, o);
-          ProcessTag('Invent.Remove', e, o);
-        End;
     End;
 
   // -------------------------------------------------------------------------------
@@ -1087,12 +1032,6 @@ Begin
     Begin
       If sSignature = 'FLST' Then
         ProcessTag('Deflst', e, o);
-
-      // Creatures.Blood applies to CREA on both Oblivion (NAM0/NAM1) and
-      // FO3/FNV (CNAM). The Oblivion dispatch lives in the Oblivion block
-      // above; this is the FO3/FNV counterpart.
-      If sSignature = 'CREA' Then
-        ProcessTag('Creatures.Blood', e, o);
 
       If ContainsStr('ACTI ALCH AMMO BOOK CONT DOOR FURN IMOD KEYM MISC MSTT PROJ TACT TERM WEAP', sSignature) Then
         ProcessTag('Destructible', e, o)
@@ -1152,12 +1091,6 @@ Begin
                ProcessTag('R.Relations.Add', e, o);
                ProcessTag('R.Relations.Change', e, o);
                ProcessTag('R.Relations.Remove', e, o);
-               // R.Ears/Head/Mouth/Teeth are Oblivion/FO3/FNV-only per Wrye
-               // Bash; emitted here rather than in the FO3/FNV/Skyrim block.
-               ProcessTag('R.Ears', e, o);
-               ProcessTag('R.Head', e, o);
-               ProcessTag('R.Mouth', e, o);
-               ProcessTag('R.Teeth', e, o);
              End;
     End;
 
@@ -1210,21 +1143,20 @@ Begin
           ProcessTag('C.ImageSpace', e, o);
         End;
 
+      If sSignature = 'RACE' Then
+        Begin
+          ProcessTag('R.Ears', e, o);
+          ProcessTag('R.Head', e, o);
+          ProcessTag('R.Mouth', e, o);
+          ProcessTag('R.Teeth', e, o);
+          ProcessTag('R.Skills', e, o);
+          ProcessTag('R.Description', e, o);
+          ProcessTag('R.Voice-F', e, o);
+          ProcessTag('R.Voice-M', e, o);
+        End;
+
       If ContainsStr('ACTI ALCH ARMO CONT DOOR FLOR FURN INGR KEYM LIGH LVLC MISC QUST WEAP', sSignature) Then
         ProcessTag('Scripts', e, o);
-    End;
-
-  // -------------------------------------------------------------------------------
-  // GROUP: RACE tags supported on every game except FO4.
-  // R.Description / R.Skills / R.Voice-F / R.Voice-M apply to Oblivion,
-  // FO3/FNV, and Skyrim per Wrye Bash.
-  // -------------------------------------------------------------------------------
-  If Not wbIsFallout4 And (sSignature = 'RACE') Then
-    Begin
-      ProcessTag('R.Description', e, o);
-      ProcessTag('R.Skills', e, o);
-      ProcessTag('R.Voice-F', e, o);
-      ProcessTag('R.Voice-M', e, o);
     End;
 
   // -------------------------------------------------------------------------------
@@ -1395,13 +1327,6 @@ Begin
           ProcessTag('Invent.Remove', e, o);
         End;
 
-      If sSignature = 'COBJ' Then
-        Begin
-          ProcessTag('Invent.Add', e, o);
-          ProcessTag('Invent.Change', e, o);
-          ProcessTag('Invent.Remove', e, o);
-        End;
-
       If sSignature = 'FACT' Then
         Begin
           ProcessTag('Relations.Add', e, o);
@@ -1415,7 +1340,8 @@ Begin
           ProcessTag('Outfits.Remove', e, o);
         End;
 
-      // Deflst applies to FO3/FNV only per Wrye Bash; FO4 has no equivalent.
+      If sSignature = 'FLST' Then
+        ProcessTag('Deflst', e, o);
 
       If sSignature = 'MGEF' Then
         ProcessTag('EffectStats', e, o);
@@ -1443,7 +1369,7 @@ Begin
   If wbIsSkyrim And ContainsStr('ACTI ADDN ALCH AMMO APPA ARMO ARTO ASPC BOOK CONT DOOR DUAL ENCH EXPL FLOR FURN GRAS HAZD IDLM INGR KEYM LIGH LVLI LVLN LVSP MISC MSTT NPC_ PROJ SCRL SLGM SOUN SPEL STAT TACT TREE TXST WEAP', sSignature) Then
     ProcessTag('ObjectBounds', e, o);
 
-  If wbIsFallout4 And ContainsStr('ACTI ADDN ALCH AMMO ARMO ARTO ASPC BNDS BOOK CMPO CONT DOOR ENCH EXPL FLOR FURN GRAS HAZD IDLM INGR KEYM LIGH LVLI LVLN LVSP MISC MSTT NOTE NPC_ PKIN PROJ SCOL SOUN SPEL STAT', sSignature) Then
+  If wbIsFallout4 And ContainsStr('ACTI ADDN ALCH AMMO ARMO ARTO ASPC BOOK CMPO CONT DOOR ENCH EXPL FLOR FURN GRAS HAZD IDLM INGR KEYM LIGH LVLI LVLN LVSP MISC MSTT NOTE NPC_ PKIN PROJ SCOL SOUN SPEL STAT', sSignature) Then
     ProcessTag('ObjectBounds', e, o);
 
   // Text — per-game signature whitelist. Not applicable to FO4.
@@ -1464,33 +1390,67 @@ Begin
 
   // Heuristic Force* tags (opt-in; runs after all other detection so it can read TagExists state).
   ProcessForceTagHeuristics(e, o);
+
+  Finally
+    g_DebugCurrentRecord := Nil;
+  End;
 End;
 
 
 Function Finalize: integer;
+Var
+  bSavedOK   : boolean;
+  sSaveError : string;
 Begin
   Result := 0;
 
-  If g_MultiFileError Then
+  // Flush the debug trace BEFORE freeing other lists, so even if a Free
+  // raises (or anything else goes wrong below) we still write the trace
+  // and announce the path to the Messages tab.
+  bSavedOK   := False;
+  sSaveError := '';
+  If g_DebugLogReady Then
     Begin
-      LogError('This script must be run on a single plugin per invocation.');
-      LogError('Targeted: ' + g_TargetFileName + '; also seen: ' + g_OtherFiles.CommaText);
-      LogError('Re-run with only one plugin selected.');
-      Result := 99;
+      Try
+        g_DebugLog.Add('');
+        g_DebugLog.Add('# end of trace ' + DateTimeToStr(Now));
+        g_DebugLog.SaveToFile(g_DebugLogPath);
+        bSavedOK := True;
+      Except
+        on E: Exception Do
+          sSaveError := '[' + E.ClassName + ': ' + E.Message + ']';
+      End;
+      Try g_DebugLog.Free; Except End;
+      g_DebugLogReady := False;
+    End
+  Else
+    sSaveError := '(buffer was never initialized - see warning above)';
+
+  // Always announce the path, even if save failed - that way the user
+  // knows where to look (or where it was supposed to land), and *why*.
+  AddMessage('');
+  AddMessage('================================================================================');
+  If bSavedOK And FileExists(g_DebugLogPath) Then
+    Begin
+      AddMessage('Debug trace written to:');
+      AddMessage('  ' + g_DebugLogPath);
+    End
+  Else
+    Begin
+      AddMessage('Debug trace was NOT written. Intended path was:');
+      AddMessage('  ' + g_DebugLogPath);
+      If sSaveError <> '' Then
+        AddMessage('Reason: ' + sSaveError);
     End;
+  AddMessage('================================================================================');
 
-  slLog.Free;
-  slTagRelationships.Free;
-  slSuggestedTags.Free;
-  slExistingTags.Free;
-  slDifferentTags.Free;
-  slBadTags.Free;
-  slDeprecatedTags.Free;
-
-  slBashTagsFileAdds.Free;
-  slBashTagsFileRemoves.Free;
-  slBashTagsFileLines.Free;
-  g_OtherFiles.Free;
+  Try slLog.Free;              Except End;
+  Try slTagRelationships.Free; Except End;
+  Try slSuggestedTags.Free;    Except End;
+  Try slExistingTags.Free;     Except End;
+  Try slDifferentTags.Free;    Except End;
+  Try slBadTags.Free;          Except End;
+  Try slDeprecatedTags.Free;   Except End;
 End;
 
 
@@ -1570,17 +1530,31 @@ Function CompareAssignment(AElement: IwbElement; AMaster: IwbElement): boolean;
 Begin
   Result := False;
 
+  DbgLog(DBG_PER_COMPARE, Format('CompareAssignment: tag=%s e=%s m=%s',
+    [g_Tag, IfThen(Assigned(AElement), 'assigned', 'nil'), IfThen(Assigned(AMaster), 'assigned', 'nil')]));
+
   If TagExists(g_Tag) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> SKIP (tag already suggested earlier)');
+      Exit;
+    End;
 
   If Not Assigned(AElement) And Not Assigned(AMaster) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> NO-OP (both sides nil)');
+      Exit;
+    End;
 
   If Assigned(AElement) And Assigned(AMaster) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> NO-OP (both sides assigned; needs deeper compare)');
+      Exit;
+    End;
 
   AddLogEntry('Assigned', AElement, AMaster);
   slSuggestedTags.Add(g_Tag);
+  DbgLog(DBG_PER_COMPARE, Format('  -> SUGGEST %s (assignment mismatch: only %s side assigned)',
+    [g_Tag, IfThen(Assigned(AElement), 'override', 'master')]));
 
   Result := True;
 End;
@@ -1590,14 +1564,25 @@ Function CompareElementCount(AElement: IwbElement; AMaster: IwbElement): boolean
 Begin
   Result := False;
 
+  DbgLog(DBG_PER_COMPARE, Format('CompareElementCount: tag=%s e=%s m=%s',
+    [g_Tag, IntToStr(ElementCount(AElement)), IntToStr(ElementCount(AMaster))]));
+
   If TagExists(g_Tag) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> SKIP (tag already suggested earlier)');
+      Exit;
+    End;
 
   If ElementCount(AElement) = ElementCount(AMaster) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> NO-OP (counts equal)');
+      Exit;
+    End;
 
   AddLogEntry('ElementCount', AElement, AMaster);
   slSuggestedTags.Add(g_Tag);
+  DbgLog(DBG_PER_COMPARE, Format('  -> SUGGEST %s (count differs: %s vs %s)',
+    [g_Tag, IntToStr(ElementCount(AElement)), IntToStr(ElementCount(AMaster))]));
 
   Result := True;
 End;
@@ -1607,14 +1592,26 @@ Function CompareElementCountAdd(AElement: IwbElement; AMaster: IwbElement): bool
 Begin
   Result := False;
 
+  DbgLog(DBG_PER_COMPARE, Format('CompareElementCountAdd: tag=%s e=%s m=%s',
+    [g_Tag, IntToStr(ElementCount(AElement)), IntToStr(ElementCount(AMaster))]));
+
   If TagExists(g_Tag) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> SKIP (tag already suggested earlier)');
+      Exit;
+    End;
 
   If ElementCount(AElement) <= ElementCount(AMaster) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, Format('  -> NO-OP (override count %s <= master count %s, no add)',
+        [IntToStr(ElementCount(AElement)), IntToStr(ElementCount(AMaster))]));
+      Exit;
+    End;
 
   AddLogEntry('ElementCountAdd', AElement, AMaster);
   slSuggestedTags.Add(g_Tag);
+  DbgLog(DBG_PER_COMPARE, Format('  -> SUGGEST %s (override has %s entries vs master %s -> additions present)',
+    [g_Tag, IntToStr(ElementCount(AElement)), IntToStr(ElementCount(AMaster))]));
 
   Result := True;
 End;
@@ -1624,31 +1621,57 @@ Function CompareElementCountRemove(AElement: IwbElement; AMaster: IwbElement): b
 Begin
   Result := False;
 
+  DbgLog(DBG_PER_COMPARE, Format('CompareElementCountRemove: tag=%s e=%s m=%s',
+    [g_Tag, IntToStr(ElementCount(AElement)), IntToStr(ElementCount(AMaster))]));
+
   If TagExists(g_Tag) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> SKIP (tag already suggested earlier)');
+      Exit;
+    End;
 
   If ElementCount(AElement) >= ElementCount(AMaster) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, Format('  -> NO-OP (override count %s >= master count %s, no removal)',
+        [IntToStr(ElementCount(AElement)), IntToStr(ElementCount(AMaster))]));
+      Exit;
+    End;
 
   AddLogEntry('ElementCountRemove', AElement, AMaster);
   slSuggestedTags.Add(g_Tag);
+  DbgLog(DBG_PER_COMPARE, Format('  -> SUGGEST %s (override has %s entries vs master %s -> removals present)',
+    [g_Tag, IntToStr(ElementCount(AElement)), IntToStr(ElementCount(AMaster))]));
 
   Result := True;
 End;
 
 
 Function CompareEditValue(AElement: IwbElement; AMaster: IwbElement): boolean;
+Var
+  sE, sM : string;
 Begin
   Result := False;
 
+  sE := DbgEdv(AElement);
+  sM := DbgEdv(AMaster);
+  DbgLog(DBG_PER_COMPARE, Format('CompareEditValue: tag=%s path=%s', [g_Tag, DbgPath(AElement)]));
+
   If TagExists(g_Tag) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> SKIP (tag already suggested earlier)');
+      Exit;
+    End;
 
   If SameText(GetEditValue(AElement), GetEditValue(AMaster)) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, Format('  -> NO-OP (edit values equal: "%s")', [sE]));
+      Exit;
+    End;
 
   AddLogEntry('GetEditValue', AElement, AMaster);
   slSuggestedTags.Add(g_Tag);
+  DbgLog(DBG_PER_COMPARE, Format('  -> SUGGEST %s (edit values differ)', [g_Tag]));
+  DbgLog(DBG_LEAF_DIFFS, Format('       override="%s"  master="%s"', [sE, sM]));
 
   Result := True;
 End;
@@ -1681,7 +1704,11 @@ Begin
   Result := False;
 
   If TagExists(g_Tag) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, Format('CompareFlags: tag=%s path=%s flag=%s -> SKIP (tag already suggested)',
+        [g_Tag, APath, AFlagName]));
+      Exit;
+    End;
 
   x := ElementByPath(AElement, APath);
   y := ElementByPath(AMaster, APath);
@@ -1697,6 +1724,10 @@ Begin
   Else
     Result := StrToBool(sa) Or StrToBool(sb);
 
+  DbgLog(DBG_PER_COMPARE, Format('CompareFlags: tag=%s path=%s flag="%s" op=%s e="%s" m="%s" -> %s',
+    [g_Tag, APath, AFlagName, IfThen(ANotOperator, 'NOT', 'OR'), sa, sb,
+     IfThen(Result, 'TRUE (gate fired)', 'FALSE (gate did not fire)')]));
+
   If ASuggest And Result Then
     Begin
       If ANotOperator Then
@@ -1705,6 +1736,7 @@ Begin
         sTestName := 'CompareFlags:OR';
       AddLogEntry(sTestName, x, y);
       slSuggestedTags.Add(g_Tag);
+      DbgLog(DBG_PER_COMPARE, Format('  -> SUGGEST %s (CompareFlags suggest=true and gate fired)', [g_Tag]));
     End;
 End;
 
@@ -1718,27 +1750,46 @@ Var
 Begin
   Result := False;
 
+  DbgLog(DBG_PER_COMPARE, Format('CompareKeys: tag=%s path=%s', [g_Tag, DbgPath(AElement)]));
+
   If TagExists(g_Tag) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> SKIP (tag already suggested earlier)');
+      Exit;
+    End;
 
   ConflictState := ConflictAllForMainRecord(ContainingMainRecord(AElement));
 
   If (ConflictState = caUnknown)
      Or (ConflictState = caOnlyOne)
      Or (ConflictState = caNoConflict) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, Format('  -> SKIP (conflict state %s; CompareKeys requires real cross-plugin conflict)',
+        [DbgConflictName(ConflictState)]));
+      Exit;
+    End;
 
   sElementEditValues := EditValues(AElement);
   sMasterEditValues  := EditValues(AMaster);
 
   If IsEmptyKey(sElementEditValues) And IsEmptyKey(sMasterEditValues) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> NO-OP (both keys empty/zeroed)');
+      Exit;
+    End;
 
   If SameText(sElementEditValues, sMasterEditValues) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> NO-OP (serialized contents identical)');
+      DbgLog(DBG_LEAF_DIFFS,  Format('       both="%s"', [DbgShortVal(sElementEditValues)]));
+      Exit;
+    End;
 
   AddLogEntry('CompareKeys', AElement, AMaster);
   slSuggestedTags.Add(g_Tag);
+  DbgLog(DBG_PER_COMPARE, Format('  -> SUGGEST %s (serialized contents differ)', [g_Tag]));
+  DbgLog(DBG_LEAF_DIFFS,  Format('       override="%s"', [DbgShortVal(sElementEditValues)]));
+  DbgLog(DBG_LEAF_DIFFS,  Format('       master  ="%s"', [DbgShortVal(sMasterEditValues)]));
 
   Result := True;
 End;
@@ -1752,17 +1803,30 @@ Var
 Begin
   Result := False;
 
+  DbgLog(DBG_PER_COMPARE, Format('CompareNativeValues: tag=%s path=%s', [g_Tag, APath]));
+
   If TagExists(g_Tag) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> SKIP (tag already suggested earlier)');
+      Exit;
+    End;
 
   x := ElementByPath(AElement, APath);
   y := ElementByPath(AMaster, APath);
 
   If GetNativeValue(x) = GetNativeValue(y) Then
-    Exit;
+    Begin
+      // GetNativeValue returns a Variant; the script engine won't coerce it
+      // to Integer/String, so do not embed the value itself in the log.
+      DbgLog(DBG_PER_COMPARE, Format('  -> NO-OP (native values equal at path "%s")', [APath]));
+      DbgLog(DBG_LEAF_DIFFS,  Format('       edit-value="%s"', [DbgEdv(x)]));
+      Exit;
+    End;
 
   AddLogEntry('CompareNativeValues', AElement, AMaster);
   slSuggestedTags.Add(g_Tag);
+  DbgLog(DBG_PER_COMPARE, Format('  -> SUGGEST %s (native values differ at path "%s")', [g_Tag, APath]));
+  DbgLog(DBG_LEAF_DIFFS,  Format('       override="%s"  master="%s"', [DbgEdv(x), DbgEdv(y)]));
 
   Result := True;
 End;
@@ -1813,16 +1877,9 @@ End;
 
 // Treats a serialized edit-value string as an "empty key" ONLY when it looks
 // like a flag-array bit string (exclusively '0' and '1' chars) and contains
-// no set bits. This is the original optimization's actual intent: allow
-// CompareKeys to bail out cheaply when both sides are all-zero flag masks.
-//
-// The earlier implementation returned True whenever the string had no literal
-// '1' char anywhere, which false-positives on any non-flag edit value that
-// happens to lack the digit '1' -- e.g. FormID hex like "00039F26", EditorIDs
-// like "CRFThalmorHQFaction", or the integer "0". That silently suppressed
-// real differences and caused false-negative tag suggestions (e.g. C.Owner on
-// cutting room floor.esp cell 00071FFE, where both the master XOWN reference
-// and the overriding one had edit values containing no '1' digit).
+// no set bits. See WryeBashTagGenerator-NG.pas for the full rationale; this
+// fork must track the production fix so CompareKeys' skip-both-empty gate
+// behaves identically.
 Function IsEmptyKey(AEditValues: String): boolean;
 
 Var
@@ -1830,18 +1887,13 @@ Var
 Begin
   Result := False;
 
-  // Empty string: nothing to compare; treat as NOT an empty-key sentinel so
-  // the caller falls through to its own SameText check (SameText('','')=True
-  // will handle the truly-identical-empty case correctly).
   If Length(AEditValues) = 0 Then
     Exit;
 
-  // Non-flag-array content disqualifies the fast path.
   For i := 1 To Length(AEditValues) Do
     If (AEditValues[i] <> '0') And (AEditValues[i] <> '1') Then
       Exit;
 
-  // All-'0'/'1' now. Any '1' means at least one bit set -> not empty.
   For i := 1 To Length(AEditValues) Do
     If AEditValues[i] = '1' Then
       Exit;
@@ -1882,6 +1934,9 @@ End;
 
 Procedure Evaluate(AElement: IwbElement; AMaster: IwbElement);
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('Evaluate: tag=%s path=%s (-> Assignment, ElementCount, EditValue, Keys)',
+    [g_Tag, DbgPath(AElement)]));
+
   // exit if the tag already exists
   If TagExists(g_Tag) Then
     Exit;
@@ -1892,7 +1947,10 @@ Begin
 
   // exit if the first element does not exist
   If Not Assigned(AElement) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  Evaluate: override side nil; further checks skipped');
+      Exit;
+    End;
 
   // suggest tag if the two elements are different
   If CompareElementCount(AElement, AMaster) Then
@@ -1910,13 +1968,16 @@ End;
 
 Procedure EvaluateAdd(AElement: IwbElement; AMaster: IwbElement);
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateAdd: tag=%s path=%s', [g_Tag, DbgPath(AElement)]));
   If TagExists(g_Tag) Then
     Exit;
 
   If Not Assigned(AElement) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  EvaluateAdd: override side nil; nothing to add-check');
+      Exit;
+    End;
 
-  // suggest tag if the overriding element has more children than its master
   If CompareElementCountAdd(AElement, AMaster) Then
     Exit;
 End;
@@ -1924,13 +1985,16 @@ End;
 
 Procedure EvaluateChange(AElement: IwbElement; AMaster: IwbElement);
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateChange: tag=%s path=%s', [g_Tag, DbgPath(AElement)]));
   If TagExists(g_Tag) Then
     Exit;
 
   If Not Assigned(AElement) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  EvaluateChange: override side nil; nothing to change-check');
+      Exit;
+    End;
 
-  // suggest tag if the two elements and their descendants have different contents
   If CompareKeys(AElement, AMaster) Then
     Exit;
 End;
@@ -1938,13 +2002,16 @@ End;
 
 Procedure EvaluateRemove(AElement: IwbElement; AMaster: IwbElement);
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateRemove: tag=%s path=%s', [g_Tag, DbgPath(AElement)]));
   If TagExists(g_Tag) Then
     Exit;
 
   If Not Assigned(AElement) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  EvaluateRemove: override side nil; nothing to remove-check');
+      Exit;
+    End;
 
-  // suggest tag if the master element has more children than its override
   If CompareElementCountRemove(AElement, AMaster) Then
     Exit;
 End;
@@ -1956,6 +2023,7 @@ Var
   x : IInterface;
   y : IInterface;
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateByPath: tag=%s path="%s"', [g_Tag, APath]));
   x := ElementByPath(AElement, APath);
   y := ElementByPath(AMaster, APath);
 
@@ -1969,6 +2037,7 @@ Var
   x : IInterface;
   y : IInterface;
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateByPathAdd: tag=%s path="%s"', [g_Tag, APath]));
   x := ElementByPath(AElement, APath);
   y := ElementByPath(AMaster, APath);
 
@@ -1982,6 +2051,7 @@ Var
   x : IInterface;
   y : IInterface;
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateByPathChange: tag=%s path="%s"', [g_Tag, APath]));
   x := ElementByPath(AElement, APath);
   y := ElementByPath(AMaster, APath);
 
@@ -1995,6 +2065,7 @@ Var
   x : IInterface;
   y : IInterface;
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateByPathRemove: tag=%s path="%s"', [g_Tag, APath]));
   x := ElementByPath(AElement, APath);
   y := ElementByPath(AMaster, APath);
 
@@ -2002,33 +2073,34 @@ Begin
 End;
 
 
-// Resolves by subrecord signature (XOWN, XRNK, XGLB, ...) instead of a named
-// struct path. Needed for tests where relying on an xEdit-defined parent
-// struct is fragile (e.g. the 'Ownership' RStruct whose collapsed-summary
-// GetEditValue varies across xEdit versions). Semantics otherwise match
-// EvaluateByPath: suggest the tag if one side is present and the other isn't,
-// if child counts differ, if the subrecord's own edit value differs, or if
-// the recursive serialized contents differ.
+// Mirrors EvaluateByPath but resolves via subrecord signature instead of a
+// named struct path. See production .pas for rationale (C.Owner rewrite).
 Procedure EvaluateBySignature(AElement: IwbElement; AMaster: IwbElement; ASignature: String);
 
 Var 
   x : IInterface;
   y : IInterface;
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateBySignature: tag=%s sig=%s', [g_Tag, ASignature]));
   x := ElementBySignature(AElement, ASignature);
   y := ElementBySignature(AMaster, ASignature);
+
+  DbgLog(DBG_LEAF_DIFFS, Format('       override-present=%s  master-present=%s',
+    [IfThen(Assigned(x), 'true', 'false'), IfThen(Assigned(y), 'true', 'false')]));
+  If Assigned(x) Or Assigned(y) Then
+    Begin
+      DbgLog(DBG_LEAF_DIFFS, Format('       override-edv="%s"', [DbgEdv(x)]));
+      DbgLog(DBG_LEAF_DIFFS, Format('       master-edv  ="%s"', [DbgEdv(y)]));
+    End;
 
   Evaluate(x, y);
 End;
 
 
-// Resolves a named top-level list on a main record. ElementByPath is the
-// standard accessor but it does not reliably resolve wbArrayS-with-signature
-// arrays that live directly on the record (e.g. OTFT INAM 'Items'): on those
-// the path lookup can return nil while ElementBySignature succeeds. Callers
-// can therefore pass either the xEdit name ('Items', 'Perks', 'Relations',
-// 'FormIDs') or the 4-char signature ('INAM') — whichever is most reliable
-// for the record type.
+// Path/signature-tolerant list array resolver. OTFT's top-level items array is
+// wbArrayS(INAM, 'Items', ...); on some xEdit builds ElementByPath(rec, 'Items')
+// returns nil on wbArrayS-with-signature arrays even when ElementBySignature
+// succeeds. Callers may pass either the xEdit name or the 4-char signature.
 Function ResolveListArray(ARec: IInterface; Const ANameOrSig: String): IInterface;
 Begin
   Result := ElementByPath(ARec, ANameOrSig);
@@ -2051,9 +2123,6 @@ Begin
 End;
 
 
-// True iff an entry with the given key exists in the master array. Linear
-// scan; lists are small (perks, items, factions, relations rarely exceed
-// low double-digit counts).
 Function ListContainsKey(AArr: IInterface; Const AKey: String; Const ARefPath: String): boolean;
 
 Var 
@@ -2071,86 +2140,130 @@ Begin
 End;
 
 
-// Set-diff .Add detector for keyed sub-record lists (OTFT Items, CONT Items,
-// NPC_ Perks, FLST FormIDs, FACT Relations, RACE Relations).
-// Suggests ATagName iff at least one override entry's identity key is NOT
-// present in the master array. Unlike the prior element-count heuristic this
-// correctly fires when a mod substitutes items (same total count, different
-// entries), e.g. CRF's MQ101StormcloakPrisonerOutfit swapping a static ARMO
-// for a CRFArmorStormcloakCuirass LVLI.
+// Set-diff .Add detector. Suggests g_Tag iff any override entry's identity
+// key is absent on the master side. Fires on both pure adds (master has no
+// such entry) and substitutions (same count, different keys) -- the
+// element-count heuristic missed the latter.
 Procedure EvaluateListAdd(ARec: IInterface; AMaster: IInterface;
                            Const AArrayName: String; Const ARefPath: String);
 
 Var 
   kArr, kArrM : IInterface;
   kEntry      : IInterface;
-  i           : integer;
+  i, nA, nM   : integer;
   sRef        : string;
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateListAdd: tag=%s arr=%s refPath=%s',
+    [g_Tag, AArrayName, ARefPath]));
   If TagExists(g_Tag) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> SKIP (tag already suggested earlier)');
+      Exit;
+    End;
 
   kArr  := ResolveListArray(ARec,    AArrayName);
   kArrM := ResolveListArray(AMaster, AArrayName);
 
+  If Assigned(kArr)  Then nA := ElementCount(kArr)  Else nA := 0;
+  If Assigned(kArrM) Then nM := ElementCount(kArrM) Else nM := 0;
+  DbgLog(DBG_LEAF_DIFFS, Format('       override-count=%d  master-count=%d', [nA, nM]));
+
   If Not Assigned(kArr) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> NO-OP (override array missing)');
+      Exit;
+    End;
   If ElementCount(kArr) = 0 Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> NO-OP (override array empty)');
+      Exit;
+    End;
 
   For i := 0 To Pred(ElementCount(kArr)) Do
     Begin
       kEntry := ElementByIndex(kArr, i);
       sRef   := ListEntryKey(kEntry, ARefPath);
       If sRef = '' Then
-        Continue;
+        Begin
+          DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="" (skip)', [i]));
+          Continue;
+        End;
 
       If Not ListContainsKey(kArrM, sRef, ARefPath) Then
         Begin
+          DbgLog(DBG_PER_COMPARE, Format('  -> SUGGEST %s (override entry[%d] key="%s" absent on master)',
+            [g_Tag, i, sRef]));
           AddLogEntry('ListAdd', kEntry, kArrM);
           slSuggestedTags.Add(g_Tag);
           Exit;
-        End;
+        End
+      Else
+        DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="%s" present on master', [i, sRef]));
     End;
+
+  DbgLog(DBG_PER_COMPARE, '  -> NO-OP (all override entries match by key)');
 End;
 
 
-// Symmetric of EvaluateListAdd. Suggests ATagName iff at least one master
-// entry's identity key is NOT present in the override array.
+// Symmetric of EvaluateListAdd.
 Procedure EvaluateListRemove(ARec: IInterface; AMaster: IInterface;
                               Const AArrayName: String; Const ARefPath: String);
 
 Var 
   kArr, kArrM : IInterface;
   kEntry      : IInterface;
-  i           : integer;
+  i, nA, nM   : integer;
   sRef        : string;
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('EvaluateListRemove: tag=%s arr=%s refPath=%s',
+    [g_Tag, AArrayName, ARefPath]));
   If TagExists(g_Tag) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> SKIP (tag already suggested earlier)');
+      Exit;
+    End;
 
   kArr  := ResolveListArray(ARec,    AArrayName);
   kArrM := ResolveListArray(AMaster, AArrayName);
 
+  If Assigned(kArr)  Then nA := ElementCount(kArr)  Else nA := 0;
+  If Assigned(kArrM) Then nM := ElementCount(kArrM) Else nM := 0;
+  DbgLog(DBG_LEAF_DIFFS, Format('       override-count=%d  master-count=%d', [nA, nM]));
+
   If Not Assigned(kArrM) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> NO-OP (master array missing)');
+      Exit;
+    End;
   If ElementCount(kArrM) = 0 Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> NO-OP (master array empty)');
+      Exit;
+    End;
 
   For i := 0 To Pred(ElementCount(kArrM)) Do
     Begin
       kEntry := ElementByIndex(kArrM, i);
       sRef   := ListEntryKey(kEntry, ARefPath);
       If sRef = '' Then
-        Continue;
+        Begin
+          DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="" (skip)', [i]));
+          Continue;
+        End;
 
       If Not ListContainsKey(kArr, sRef, ARefPath) Then
         Begin
+          DbgLog(DBG_PER_COMPARE, Format('  -> SUGGEST %s (master entry[%d] key="%s" absent on override)',
+            [g_Tag, i, sRef]));
           AddLogEntry('ListRemove', kEntry, kArr);
           slSuggestedTags.Add(g_Tag);
           Exit;
-        End;
+        End
+      Else
+        DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="%s" present on override', [i, sRef]));
     End;
+
+  DbgLog(DBG_PER_COMPARE, '  -> NO-OP (all master entries match by key)');
 End;
 
 
@@ -2165,8 +2278,14 @@ Var
   k          : IInterface;
   sSignature : string;
 Begin
-  g_Tag := ATag;
+  g_Tag             := ATag;
+  g_DebugCurrentTag := ATag;
+  DbgSuggestSnapshot;
 
+  DbgLog(DBG_PER_TAG, Format('CONSIDER tag=%s on %s', [ATag, DbgRecordTag]));
+  Inc(g_DebugIndent);
+
+  Try
   If TagExists(g_Tag) Then
     Exit;
 
@@ -2186,7 +2305,6 @@ Begin
           If Not CompareFlags(x, y, 'Template Flags', 'Stats', False, False) And CompareKeys(a, b) Then
             Exit;
 
-          EvaluateByPath(x, y, 'Level');
           EvaluateByPath(x, y, 'Calc min level');
           EvaluateByPath(x, y, 'Calc max level');
           EvaluateByPath(x, y, 'Disposition Base');
@@ -2243,16 +2361,6 @@ Begin
                EvaluateByPath(x, y, 'Teaches');
                EvaluateByPath(x, y, 'Maximum training level');
 
-               // Added in FO3/FNV; not present on Oblivion AIDT. EvaluateByPath
-               // is safe on Oblivion (missing path is a silent no-op).
-               If wbIsFallout3 Or wbIsFalloutNV Then
-                 Begin
-                   EvaluateByPath(x, y, 'Mood');
-                   EvaluateByPath(x, y, 'Assistance');
-                   EvaluateByPath(x, y, 'Aggro Radius Behavior');
-                   EvaluateByPath(x, y, 'Aggro Radius');
-                 End;
-
                If CompareNativeValues(x, y, 'Buys/Sells and Services') Then
                  Exit;
              End;
@@ -2275,8 +2383,7 @@ Begin
          EvaluateByPath(e, m, 'INAM')
 
          // Bookmark: NPC.Perks.Add (TES5/SSE/FO4)
-         // Set-diff on Perks[*]\Perk (FormID). Element-count-only would miss
-         // substitutions (swap one perk for another at same total count).
+         // Set-diff on Perks[*]\Perk (FormID) -- was element-count-only (1.9.1.3-).
   Else If (g_Tag = 'NPC.Perks.Add') Then
          EvaluateListAdd(e, m, 'Perks', 'Perk')
 
@@ -2352,22 +2459,13 @@ Begin
          EvaluateByPath(e, m, 'XCAS')
 
          // Bookmark: C.Climate
-         // Per-game gating flag differs: Oblivion/FO3/FNV use 'Behave Like
-         // Exterior', Skyrim/Enderal/SSE use 'Show Sky'. Fire the tag if the
-         // flag value differs between master and override, otherwise diff XCCM.
   Else If (g_Tag = 'C.Climate') Then
          Begin
-           If wbIsSkyrim Then
-             Begin
-               If CompareFlags(e, m, 'DATA', 'Show Sky', True, True) Then
-                 Exit;
-             End
-           Else
-             Begin
-               If CompareFlags(e, m, 'DATA', 'Behave Like Exterior', True, True) Then
-                 Exit;
-             End;
+           // add tag if the Behave Like Exterior flag is set ine one record but not the other
+           If CompareFlags(e, m, 'DATA', 'Behave Like Exterior', True, True) Then
+             Exit;
 
+           // evaluate additional property
            EvaluateByPath(e, m, 'XCCM');
          End
 
@@ -2417,12 +2515,8 @@ Begin
          End
 
          // Bookmark: C.Music
-         // Oblivion's music subrecord is XCMT; every other supported game uses XCMO.
   Else If (g_Tag = 'C.Music') Then
-         If wbIsOblivion Then
-           EvaluateByPath(e, m, 'XCMT')
-         Else
-           EvaluateByPath(e, m, 'XCMO')
+         EvaluateByPath(e, m, 'XCMO')
 
          // Bookmark: FULL (C.Name, Names)
   Else If (g_Tag = 'C.Name') Or (g_Tag = 'Names') Then
@@ -2430,26 +2524,19 @@ Begin
 
          // Bookmark: C.Owner
          //
-         // Wrye Bash's C.Owner patcher imports XOWN (Owner), XRNK (Faction
-         // rank), XGLB (Oblivion-only Global), and the DATA "Public Place"
-         // flag (Oblivion / FO3 / FNV). Historically this was a single
-         // EvaluateByPath(e, m, 'Ownership'), which (a) depends on xEdit's
-         // RStruct path resolving cleanly, (b) collapses all children into
-         // one recursive edit-value string that then hits CompareKeys'
-         // IsEmptyKey gate, and (c) omits the Public Place flag entirely.
-         //
-         // Replaced with direct subrecord-signature checks plus the flag,
-         // mirroring the Wrye Bash field set and staying robust against
-         // struct-path / summary-flag quirks across xEdit versions.
+         // See production WryeBashTagGenerator-NG.pas for full rationale.
+         // Summary: the legacy EvaluateByPath(..., 'Ownership') was fragile
+         // across xEdit versions and omitted the Public Place flag. Direct
+         // subrecord comparisons match Wrye Bash's C.Owner field set.
   Else If (g_Tag = 'C.Owner') Then
          Begin
            EvaluateBySignature(e, m, 'XOWN');
            EvaluateBySignature(e, m, 'XRNK');
 
-           If wbIsOblivion Then
+           If wbIsOblivion Or wbIsOblivionR Then
              EvaluateBySignature(e, m, 'XGLB');
 
-           If wbIsOblivion Or wbIsFallout3 Or wbIsFalloutNV Then
+           If wbIsOblivion Or wbIsOblivionR Or wbIsFallout3 Or wbIsFalloutNV Then
              If CompareFlags(e, m, 'DATA', 'Public Place', True, True) Then
                Exit;
          End
@@ -2478,30 +2565,17 @@ Begin
            If CompareFlags(e, m, 'DATA', 'Is Interior Cell', False, False) Then
              Exit;
 
+           // evaluate properties
            EvaluateByPath(e, m, 'XCLW');
            EvaluateByPath(e, m, 'XCWT');
-
-           // Water Noise Texture (XNAM) is FO3/FNV/Skyrim; Oblivion has no equivalent.
-           If Not wbIsOblivion Then
-             EvaluateByPath(e, m, 'XNAM');
-
-           // Water Environment Map (XWEM) is Skyrim/Enderal/SSE only.
-           If wbIsSkyrim Then
-             EvaluateByPath(e, m, 'XWEM');
          End
 
          // Bookmark: Creatures.Blood
-         // Oblivion stores blood art in two subrecords (NAM0 Blood Spray,
-         // NAM1 Blood Decal). FO3/FNV collapse this to a single CNAM
-         // Impact Dataset reference.
   Else If (g_Tag = 'Creatures.Blood') Then
-         If wbIsOblivion Then
-           Begin
-             EvaluateByPath(e, m, 'NAM0');
-             EvaluateByPath(e, m, 'NAM1');
-           End
-         Else
-           EvaluateByPath(e, m, 'CNAM')
+         Begin
+           EvaluateByPath(e, m, 'NAM0');
+           EvaluateByPath(e, m, 'NAM1');
+         End
 
          // Bookmark: Creatures.Type
   Else If (g_Tag = 'Creatures.Type') Then
@@ -2897,14 +2971,14 @@ Begin
          EvaluateByPath(e, m, 'OBND')
 
          // Bookmark: Outfits.Add
-         // OTFT records expose a single child array element 'Items' (signature INAM).
-         // Pass the 'INAM' signature rather than the 'Items' name: OTFT's items
-         // array is wbArrayS(INAM, 'Items', ...) at the top level of the record,
-         // and ElementByPath(rec, 'Items') can return nil on wbArrayS-with-signature
-         // arrays on some xEdit builds. ResolveListArray falls back to
-         // ElementBySignature, which is stable. Identity key is the FormID itself.
-         // Element-count-only would miss e.g. MQ101StormcloakPrisonerOutfit swapping
-         // a static ARMO for an LVLI at the same count.
+         // Pass the 'INAM' signature, not the 'Items' name. OTFT's items array is
+         // wbArrayS(INAM, 'Items', ...) at the top level of the record, and
+         // ElementByPath(rec, 'Items') can return nil on wbArrayS-with-signature
+         // arrays on some xEdit builds (observed with Cutting Room Floor). The
+         // signature lookup is stable; ResolveListArray falls back to it.
+         // Identity key is the FormID itself; element-count-only missed
+         // MQ101StormcloakPrisonerOutfit swapping a static ARMO for an LVLI at
+         // the same count.
   Else If (g_Tag = 'Outfits.Add') Then
          EvaluateListAdd(e, m, 'INAM', '')
 
@@ -2990,16 +3064,14 @@ Begin
          EvaluateListAdd(e, m, 'Relations', 'Faction')
 
          // Bookmark: R.Relations.Change
-         // Match entries on Faction; only fire if a shared faction's Modifier
-         // (Oblivion) or Modifier + Group Combat Reaction (non-Oblivion) differs.
-         // Adds/removes go to R.Relations.Add / R.Relations.Remove.
-         // R.Relations is Oblivion/FO3/FNV only; Skyrim/FO4 never reach here
-         // in practice, but the non-Oblivion branch handles them defensively.
+         // Match entries on Faction; only fire if a shared faction's Modifier or
+         // (Skyrim/FO4) Group Combat Reaction differs. Adds/removes go to
+         // R.Relations.Add / R.Relations.Remove.
   Else If (g_Tag = 'R.Relations.Change') Then
-         If wbIsOblivion Then
-           DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier')
-         Else
+         If wbIsSkyrim Or wbIsFallout4 Then
            DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier|Group Combat Reaction')
+         Else
+           DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier')
 
          // Bookmark: R.Relations.Remove
   Else If (g_Tag = 'R.Relations.Remove') Then
@@ -3037,14 +3109,14 @@ Begin
          EvaluateListAdd(e, m, 'Relations', 'Faction')
 
          // Bookmark: Relations.Change
-         // Match entries on Faction; only fire if a shared faction's Modifier
-         // (Oblivion) or Modifier + Group Combat Reaction (every other game)
-         // differs. Adds/removes go to Relations.Add / Relations.Remove.
+         // Match entries on Faction; only fire if a shared faction's Modifier or
+         // (Skyrim/FO4) Group Combat Reaction differs. Adds/removes go to
+         // Relations.Add / Relations.Remove.
   Else If (g_Tag = 'Relations.Change') Then
-         If wbIsOblivion Then
-           DiffSubrecordList(e, m, 'Relations.Change', 'Relations', 'Faction', 'Modifier')
-         Else
+         If wbIsSkyrim Or wbIsFallout4 Then
            DiffSubrecordList(e, m, 'Relations.Change', 'Relations', 'Faction', 'Modifier|Group Combat Reaction')
+         Else
+           DiffSubrecordList(e, m, 'Relations.Change', 'Relations', 'Faction', 'Modifier')
 
          // Bookmark: Relations.Remove
   Else If (g_Tag = 'Relations.Remove') Then
@@ -3162,6 +3234,15 @@ Begin
          // Bookmark: WeaponMods
   Else If (g_Tag = 'WeaponMods') Then
          EvaluateByPath(e, m, 'Weapon Mods');
+
+  Finally
+    Dec(g_DebugIndent);
+    If DbgWasSuggested Then
+      DbgLog(DBG_PER_TAG, Format('VERDICT tag=%s on %s -> SUGGESTED', [ATag, DbgRecordTag]))
+    Else
+      DbgLog(DBG_PER_TAG, Format('VERDICT tag=%s on %s -> NOT SUGGESTED', [ATag, DbgRecordTag]));
+    g_DebugCurrentTag := '';
+  End;
 End;
 
 
@@ -3421,15 +3502,29 @@ Var
   sRef, sRefM         : string;
   sData, sDataM       : string;
 Begin
+  DbgLog(DBG_PER_COMPARE, Format('DiffSubrecordList: tag=%s array=%s ref=%s data=%s',
+    [ATagName, AArrayName, ARefPath, ADataPathsDelim]));
+
   If TagExists(ATagName) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, '  -> SKIP (tag already suggested earlier)');
+      Exit;
+    End;
 
   kArr  := ElementByName(ARec,    AArrayName);
   kArrM := ElementByName(AMaster, AArrayName);
   If Not Assigned(kArr) Or Not Assigned(kArrM) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, Format('  -> NO-OP (array "%s" missing on %s)',
+        [AArrayName, IfThen(Not Assigned(kArr), 'override', 'master')]));
+      Exit;
+    End;
   If (ElementCount(kArr) = 0) Or (ElementCount(kArrM) = 0) Then
-    Exit;
+    Begin
+      DbgLog(DBG_PER_COMPARE, Format('  -> NO-OP (one side empty: e=%s m=%s)',
+        [IntToStr(ElementCount(kArr)), IntToStr(ElementCount(kArrM))]));
+      Exit;
+    End;
 
   slDataPaths := TStringList.Create;
   Try
@@ -3442,7 +3537,10 @@ Begin
         kEntry := ElementByIndex(kArr, i);
         sRef   := GetElementEditValues(kEntry, ARefPath);
         If sRef = '' Then
-          Continue;
+          Begin
+            DbgLog(DBG_PER_COMPARE, Format('  entry[%s]: no ref value at "%s" -> skip', [IntToStr(i), ARefPath]));
+            Continue;
+          End;
 
         // Find the matching entry in master by ref (linear scan; lists are small).
         kMatch := Nil;
@@ -3458,7 +3556,10 @@ Begin
 
         // Ref only in override = Add (handled by *.Add tag); skip.
         If Not Assigned(kMatch) Then
-          Continue;
+          Begin
+            DbgLog(DBG_PER_COMPARE, Format('  entry[%s] ref="%s" -> add-only (no master match), skip', [IntToStr(i), sRef]));
+            Continue;
+          End;
 
         // Compare each requested data path. First difference wins and emits the tag.
         For k := 0 To Pred(slDataPaths.Count) Do
@@ -3480,10 +3581,15 @@ Begin
                 g_Tag := ATagName;
                 AddLogEntry('SubrecordChange', kEntry, kMatch);
                 slSuggestedTags.Add(g_Tag);
+                DbgLog(DBG_PER_COMPARE, Format('  entry[%s] ref="%s" data-path="%s" DIFFERS -> SUGGEST %s',
+                  [IntToStr(i), sRef, slDataPaths[k], ATagName]));
+                DbgLog(DBG_LEAF_DIFFS, Format('       override="%s"  master="%s"',
+                  [DbgShortVal(sData), DbgShortVal(sDataM)]));
                 Exit;
               End;
           End;
       End;
+    DbgLog(DBG_PER_COMPARE, '  -> NO-OP (all shared entries had identical data on requested paths)');
   Finally
     slDataPaths.Free;
   End;
@@ -3634,7 +3740,8 @@ End;
 
 Procedure chkAddTagsClick(Sender: TObject);
 Begin
-  g_AddTags := Sender.Checked;
+  // READ-ONLY DEBUG FORK: g_AddTags is unconditionally False; ignore checkbox state.
+  g_AddTags := False;
 End;
 
 Procedure chkAddFileClick(Sender: TObject);
@@ -3691,11 +3798,12 @@ Begin
     chkAddTags.Parent   := frm;
     chkAddTags.Left     := 16 * ScaleFactor;
     chkAddTags.Top      := 16 * ScaleFactor;
-    chkAddTags.Width    := 185 * ScaleFactor;
+    chkAddTags.Width    := 280 * ScaleFactor;
     chkAddTags.Height   := 16 * ScaleFactor;
-    chkAddTags.Caption  := 'Write suggested tags to header';
+    chkAddTags.Caption  := 'Write suggested tags to header (DISABLED in debug fork)';
     chkAddTags.Checked  := False;
-    g_AddTags := chkAddTags.Checked;
+    chkAddTags.Enabled  := False;     // READ-ONLY DEBUG FORK
+    g_AddTags := False;               // never honored regardless of checkbox state
     chkAddTags.OnClick  := chkAddTagsClick;
     chkAddTags.TabOrder := 0;
 
@@ -3703,11 +3811,12 @@ Begin
     chkAddFile.Parent   := frm;
     chkAddFile.Left     := 16 * ScaleFactor;
     chkAddFile.Top      := 39 * ScaleFactor;
-    chkAddFile.Width    := 185 * ScaleFactor;
+    chkAddFile.Width    := 280 * ScaleFactor;
     chkAddFile.Height   := 16 * ScaleFactor;
-    chkAddFile.Caption  := 'Write suggested tags to file';
+    chkAddFile.Caption  := 'Write suggested tags to file (DISABLED in debug fork)';
     chkAddFile.Checked  := False;
-    g_AddFile := chkAddFile.Checked;
+    chkAddFile.Enabled  := False;     // READ-ONLY DEBUG FORK
+    g_AddFile := False;               // never honored regardless of checkbox state
     chkAddFile.OnClick  := chkAddFileClick;
     chkAddFile.TabOrder := 0;
 

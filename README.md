@@ -1,6 +1,10 @@
 # WryeBashTagGenerator-NG
 
-xEdit Pascal script that generates [Wrye Bash](https://github.com/wrye-bash/wrye-bash) bash tags for a selected plugin by diffing the plugin's records against their masters and emitting the tag names that match Wrye Bash's patcher rules. Fork of fireundubh's `WryeBashTagGenerator` (multifile variant by Xideta).
+xEdit Pascal script that generates [Wrye Bash](https://github.com/wrye-bash/wrye-bash) bash tags by diffing plugin records against their masters and emitting the tag names that match Wrye Bash's patcher rules. Fork of fireundubh's `WryeBashTagGenerator` (multifile variant by Xideta).
+
+This repo provides two scripts:
+- `WryeBashTagGenerator-NG.pas`: **single-plugin** (run with exactly one plugin selected).
+- `WryeBashTagGenerator-Multi-NG.pas`: **multifile convenience** (run with multiple plugins selected; each plugin is processed independently, anchored to stock/base-game masters only).
 
 > **No support.** This script is provided as an example. There is no warranty, no support, no bug-tracker SLA, no upgrade promises. Use at your own risk; review suggested tags before writing them to your plugin's header. The upstream authors of `WryeBashTagGenerator` (fireundubh, Xideta) did not write this fork and should not be contacted about it; see Credits below for proper citation.
 
@@ -136,7 +140,7 @@ For `RACE` records, the script splits a single `R.ChangeSpells` emission into tw
 - `R.AddSpells` / `R.ChangeSpells`: previously only emitted for Oblivion RACE records. Now also emitted for Skyrim/SSE/Enderal via the same `ProcessRaceSpells` Add/Change split, with the SPLO array path made game-aware.
 
 ## 1.9.2.0 - multifile
-- Added back multifile support, plus safeguards for independant plugin tagging.
+- Added back multifile support, plus safeguards for independent plugin tagging.
 
 ## 1.9.2.1 - bug fixes and deduplication
 - wbIsOblivion also tested for Oblivion Remastered, making explicitly testing for it redundant.

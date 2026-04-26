@@ -52,14 +52,14 @@
 }
 
 
-Unit WryeBashTagGeneratorNG;
+Unit WryeBashTagGeneratorMultiNG;
 
 Uses 
   Dialogs;
 
 Const 
-  ScriptName    = 'WryeBashTagGenerator-NG';
-  ScriptVersion = '1.9.2.1';
+  ScriptName    = 'WryeBashTagGenerator-Multi-NG';
+  ScriptVersion = '1.9.2.1-multi';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor';
   ScriptEmail   = 'NO SUPPORT';
@@ -93,13 +93,59 @@ Var
   g_ShowTagRelationships  : boolean;
   g_HeuristicForceTags    : boolean;
 
-  // Single-plugin enforcement: lock onto the first file we see. If multiple
-  // plugins are selected in xEdit, the first is processed and the run exits
-  // with an error in Finalize.
-  g_TargetFile     : IwbFile;
-  g_TargetFileName : string;
-  g_MultiFileError : boolean;
-  g_OtherFiles     : TStringList;
+// True iff AFileName is a stock “base game” master file for the current game.
+// Multi mode compares each plugin against stock masters only, to avoid treating
+// other selected mods as context (this is a batch convenience tool, not a load
+// order reconciliation pass).
+Function IsStockMasterFile(Const AFileName: string): boolean;
+Begin
+  Result := False;
+
+  // TES5 / SSE / Enderal
+  If wbIsSkyrim Then
+    Begin
+      Result :=
+        SameText(AFileName, 'Skyrim.esm')
+        Or SameText(AFileName, 'Update.esm')
+        Or SameText(AFileName, 'Dawnguard.esm')
+        Or SameText(AFileName, 'HearthFires.esm')
+        Or SameText(AFileName, 'Dragonborn.esm');
+      Exit;
+    End;
+
+  // TES4 / TES4R
+  If wbIsOblivion Then
+    Begin
+      Result := SameText(AFileName, 'Oblivion.esm');
+      Exit;
+    End;
+
+  // FO3 / FNV
+  If wbIsFallout3 Then
+    Begin
+      Result := SameText(AFileName, 'Fallout3.esm');
+      Exit;
+    End;
+  If wbIsFalloutNV Then
+    Begin
+      Result := SameText(AFileName, 'FalloutNV.esm');
+      Exit;
+    End;
+
+  // FO4
+  If wbIsFallout4 Then
+    Begin
+      Result :=
+        SameText(AFileName, 'Fallout4.esm')
+        Or SameText(AFileName, 'DLCRobot.esm')
+        Or SameText(AFileName, 'DLCworkshop01.esm')
+        Or SameText(AFileName, 'DLCCoast.esm')
+        Or SameText(AFileName, 'DLCworkshop02.esm')
+        Or SameText(AFileName, 'DLCworkshop03.esm')
+        Or SameText(AFileName, 'DLCNukaWorld.esm');
+      Exit;
+    End;
+End;
 
 // Oblivion (vanilla and Remastered). Detection logic treats both identically,
 // so this is the predicate to use anywhere Oblivion-specific behavior applies.
@@ -453,16 +499,10 @@ Function NotifyHeaderBashTagsDiscrepancy: boolean;
 Var
   iResult : integer;
 Begin
-  iResult := MessageDlg(
-    'The {{BASH:...}} block in the plugin header and the existing BashTags '
-    + 'file disagree on tags for plugin:'#13#10
-    + '    ' + g_FileName + #13#10#13#10
-    + 'This script does not reconcile the two; please fix the discrepancy '
-    + 'manually.'#13#10#13#10
-    + 'Ignore = skip writes for this plugin, continue with the next.'#13#10
-    + 'Abort  = halt the run; no further plugins will be processed.',
-    mtWarning, [mbIgnore, mbAbort], 0);
-  Result := (iResult = mrAbort);
+  // Multi mode: always ignore discrepancy and continue (matching the older
+  // multifile behavior). Still warn loudly so the user can correct it.
+  LogWarn('Header/BashTags discrepancy detected; skipping writes for this plugin and continuing.');
+  Result := False;
 End;
 
 
@@ -489,8 +529,9 @@ Begin
 
   g_AddTags  := False;
   g_AddFile  := False;
-  g_LogTests             := True;
-  g_ShowTagRelationships := True;
+  // Multi defaults: keep log size down; deep logging belongs in -debug.
+  g_LogTests             := False;
+  g_ShowTagRelationships := False;
   g_HeuristicForceTags   := False;
 
   slLog := TStringList.Create;
@@ -529,14 +570,7 @@ Begin
 
   g_AbortRun := False;
 
-  // Single-plugin lock
-  g_TargetFile     := Nil;
-  g_TargetFileName := '';
-  g_MultiFileError := False;
-  g_OtherFiles     := TStringList.Create;
-  g_OtherFiles.Sorted        := True;
-  g_OtherFiles.Duplicates    := dupIgnore;
-  g_OtherFiles.CaseSensitive := False;
+  // No single-plugin lock in Multi mode.
 
   If wbVersionNumber < MinXEditVer Then
     Begin
@@ -613,27 +647,12 @@ Begin
   If (ElementType(input) = etMainRecord) Then
     exit;
 
-  f := GetFile(input);
-
-  // Single-plugin enforcement: lock onto the first file we see.
-  // Any additional distinct file flips an error flag; Finalize then aborts the run.
-  If Not Assigned(g_TargetFile) Then
-    Begin
-      g_TargetFile     := f;
-      g_TargetFileName := GetFileName(f);
-    End
-  Else If Not SameText(GetFileName(f), g_TargetFileName) Then
-    Begin
-      g_MultiFileError := True;
-      If g_OtherFiles.IndexOf(GetFileName(f)) = -1 Then
-        g_OtherFiles.Add(GetFileName(f));
-      Exit;
-    End;
-
   // Honour prior user-requested abort: once the discrepancy dialog sets
   // g_AbortRun, every remaining per-file Process invocation returns immediately.
   If g_AbortRun Then
     Exit;
+
+  f := GetFile(input);
   g_FileName := GetFileName(f);
 
   // Start-of-Process state reset. Each selected plugin is tagged independently;
@@ -767,13 +786,8 @@ Begin
                       End
                     Else If HeaderBashTagsDiffer Then
                       Begin
-                        If NotifyHeaderBashTagsDiscrepancy Then
-                          Begin
-                            g_AbortRun := True;
-                            LogWarn('Header/BashTags discrepancy detected; user aborted run. No further plugins will be processed.');
-                          End
-                        Else
-                          LogWarn('Header/BashTags discrepancy detected; skipping writes for this plugin. Continuing with remaining plugins.');
+                        // Multi mode: always ignore discrepancy and continue.
+                        NotifyHeaderBashTagsDiscrepancy;
                         bDoFileWrite := False;
                         bWriteHeader := False;
                       End
@@ -952,6 +966,14 @@ Begin
 
   // get master record if record is an override
   o := Master(e);
+
+  If Not Assigned(o) Then
+    Exit;
+
+  // Multi mode: ignore non-stock masters to keep each plugin’s results anchored
+  // to the base game. Walk up the master chain until we hit a stock master.
+  While Assigned(o) And (Not IsStockMasterFile(GetFileName(GetFile(o)))) Do
+    o := Master(o);
 
   If Not Assigned(o) Then
     Exit;
@@ -1471,14 +1493,6 @@ Function Finalize: integer;
 Begin
   Result := 0;
 
-  If g_MultiFileError Then
-    Begin
-      LogError('This script must be run on a single plugin per invocation.');
-      LogError('Targeted: ' + g_TargetFileName + '; also seen: ' + g_OtherFiles.CommaText);
-      LogError('Re-run with only one plugin selected.');
-      Result := 99;
-    End;
-
   slLog.Free;
   slTagRelationships.Free;
   slSuggestedTags.Free;
@@ -1490,7 +1504,6 @@ Begin
   slBashTagsFileAdds.Free;
   slBashTagsFileRemoves.Free;
   slBashTagsFileLines.Free;
-  g_OtherFiles.Free;
 End;
 
 
