@@ -135,6 +135,17 @@ For `RACE` records, the script splits a single `R.ChangeSpells` emission into tw
 - `NPC.Race` and `NPC.Class` were never emitted for Oblivion NPCs (only Eyes / FaceGen / Hair were). Added; no template-flag gating since Oblivion has no template system.
 - `R.AddSpells` / `R.ChangeSpells`: previously only emitted for Oblivion RACE records. Now also emitted for Skyrim/SSE/Enderal via the same `ProcessRaceSpells` Add/Change split, with the SPLO array path made game-aware.
 
+## 1.9.2.0 - multifile
+- Added back multifile support, plus safeguards for independant plugin tagging.
+
+## 1.9.2.1 - bug fixes and deduplication
+- wbIsOblivion also tested for Oblivion Remastered, making explicitly testing for it redundant.
+- wbIsOblivionR tests were previously added in a way where operator precedence could mean incorrect predicates.
+- Moved making standardized sets to it's own function.
+- Moved repeated `ACBS\Template Flags` tests to function.
+- Removed unused variables.
+- Further deduplication and misc edge case fixes.
+
 ## Credits
 
 Original authors (please cite when referencing this script's lineage):
@@ -145,6 +156,7 @@ Original authors (please cite when referencing this script's lineage):
 `-NG` fork:
 
 - **Beermotor** — maintainer of `WryeBashTagGenerator-NG`. Provided as-is with no support.
+- **Xideta** — multifile, plus misc bugfixes, and improvements.
 
 > Beermotor, _WryeBashTagGenerator-NG_ (xEdit Pascal script), forked from fireundubh's _WryeBashTagGenerator_ (multifile variant by Xideta).
 
