@@ -41,7 +41,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-NG';
-  ScriptVersion = '1.9.4';
+  ScriptVersion = '1.9.5';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor and Xideta';
   ScriptEmail   = 'NO SUPPORT';
@@ -2190,12 +2190,13 @@ Begin
           If Not CompareFlags(x, y, 'Template Flags', 'Stats', False, False) And CompareKeys(a, b) Then
             Exit;
 
+          EvaluateByPath(x, y, 'XP Value Offset');
           EvaluateByPath(x, y, 'Level');
           EvaluateByPath(x, y, 'Calc min level');
           EvaluateByPath(x, y, 'Calc max level');
           EvaluateByPath(x, y, 'Disposition Base');
           EvaluateByPath(x, y, 'Bleedout Override');
-          EvaluateByPath(x, y, 'XP Value Offset');
+          EvaluateByPath(x, y, 'Template Flags');
         End
       Else If wbIsSkyrim And (sSignature = 'NPC_') Then
         Begin
@@ -2253,8 +2254,10 @@ Begin
                EvaluateByPath(x, y, 'Morality');
                EvaluateByPath(x, y, 'Mood');
                EvaluateByPath(x, y, 'Assistance');
-               If CompareNativeValues(x, y, 'Aggro') Then
-                 Exit;
+               j := ElementByPath(x, 'Aggro');
+               k := ElementByPath(y, 'Aggro');
+               If Assigned(j) And Assigned(k) Then
+                 Evaluate(j, k);
                EvaluateByPath(x, y, 'No Slow Approach');
              End
            Else If wbIsSkyrim And ContainsStr('CREA NPC_', sSignature) Then
@@ -2706,12 +2709,29 @@ Begin
                   // evaluate ARMO properties
            Else If sSignature = 'ARMO' Then
                   Begin
-                    // Shared
-                    EvaluateByPath(e, m, 'Male world model');
-                    EvaluateByPath(e, m, 'Female world model');
+                    If wbIsFallout4 Then
+                      Begin
+                        EvaluateByPath(e, m, 'Male\World Model');
+                        EvaluateByPath(e, m, 'Female\World Model');
+                        EvaluateByPath(e, m, 'Male\Icon Image');
+                        EvaluateByPath(e, m, 'Female\Icon Image');
+                        x := ElementByPath(e, 'BOD2\First Person Flags');
+                        If Not Assigned(x) Then
+                          Exit;
 
-                    // ARMO - Oblivion
-                    If wbIsOblivion Then
+                        y := ElementByPath(m, 'BOD2\First Person Flags');
+
+                        If CompareKeys(x, y) Then
+                          Exit;
+                      End
+                    Else
+                      Begin
+                        // Shared (TES4 / FO3 / FNV / TES5)
+                        EvaluateByPath(e, m, 'Male world model');
+                        EvaluateByPath(e, m, 'Female world model');
+
+                        // ARMO - Oblivion
+                        If wbIsOblivion Then
                       Begin
                         // evaluate Icon properties
                         EvaluateByPath(e, m, 'Icon');
@@ -2803,6 +2823,7 @@ Begin
                              If CompareKeys(x, y) Then
                                Exit;
                            End;
+                      End;
                   End
 
                   // evaluate CREA properties
@@ -2838,8 +2859,8 @@ Begin
                     EvaluateByPath(e, m, 'DATA');
                   End
 
-                  // evaluate MGEF properties
-           Else If wbIsSkyrim And (sSignature = 'MGEF') Then
+                  // evaluate MGEF properties (TES5 + FO4: shader / art fields)
+           Else If (wbIsSkyrim Or wbIsFallout4) And (sSignature = 'MGEF') Then
                   Begin
                     EvaluateByPath(e, m, 'Magic Effect Data\DATA\Casting Light');
                     EvaluateByPath(e, m, 'Magic Effect Data\DATA\Hit Shader');
