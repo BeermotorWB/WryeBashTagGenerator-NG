@@ -40,7 +40,7 @@ Const
   ScriptName    = 'WryeBashTagGenerator-NG-debug';
   ScriptVersion = '1.9.1.6-debug';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
-  ScriptAuthor  = 'Beermotor';
+  ScriptAuthor  = 'Beermotor and Xideta';
   ScriptEmail   = 'NO SUPPORT';
   ScaleFactor   = Screen.PixelsPerInch / 96;
 
