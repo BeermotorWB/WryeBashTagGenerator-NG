@@ -39,6 +39,8 @@ Compared to the main script:
 | Header vs BashTags file mismatch (when file writes are enabled) | **Stricter guardrail**: user is prompted (**Abort** stops the run; **Ignore** skips writes for that plugin only) so you do not silently pick a “winner” between two disagreeing tag sources | **Batch convenience**: mismatch **auto-skips** writes for that plugin and **continues** with the next (no silent overwrite of conflicting sources) |
 | Default log verbosity | Same defaults as main | **Test logging** and **Tag↔Record relationship** output default **off** to keep batch runs readable (use `-debug` for deep traces) |
 
+`ProcessTag` and helpers are shared in spirit, but `ProcessRecord` is duplicated. It should match the main script **except** the Multi-only walk to a **stock** master for `o` (see the comment above `ProcessRecord` in the Multi source). A small repo check: run `python tools/diff_processrecord.py` from the project root; it should print `OK` when the two are aligned (normalizing that walk).
+
 ## Options dialog
 
 Four checkboxes:
@@ -169,6 +171,7 @@ Applies to **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-N
 - **`Graphics` / `ARMO` (FO4)**: FO4-first branch uses xEdit paths under **`Male` / `Female`** (`World Model`, `Icon Image`) and **`BOD2\First Person Flags`** only (FO4 `BOD2` has no Skyrim-style general flags). Avoids running TES5 **`Male world model`** paths on FO4 records.
 - **`Graphics` / `MGEF` (FO4)**: Shader / art checks (`Casting Light`, `Hit Shader`, `Enchant Shader` under `Magic Effect Data\DATA\…`) now run for FO4 as well as Skyrim.
 - **Debug** (`WryeBashTagGenerator-NG-debug.pas`, **`1.9.5-debug`**) carries the same **FO4** `ProcessTag` updates above; FO4 **ObjectBounds** list matches main (includes **`BNDS`**). The debug script still lags the main `ProcessRecord` script on some non-debug paths (e.g. full Skyrim `NPC_` `ProcessTag` matrix).
+- **Multi** (`WryeBashTagGenerator-Multi-NG.pas`): `ProcessRecord` re-synced with main (one drift: missing RACE block comments); in-source comment + `tools/diff_processrecord.py` to verify parity with the main script, aside from the stock-master `o` walk.
 
 ## v1.9.4 — Skyrim/SSE importer parity (Wrye Bash)
 

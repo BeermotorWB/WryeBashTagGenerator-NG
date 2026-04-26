@@ -918,6 +918,9 @@ Begin
     ProcessTag(ATag, e, o);
 End;
 
+// ProcessRecord: keep the body line-for-line in sync with WryeBashTagGenerator-NG.pas
+// except for the Multi-only stock-master `While` walk (after `o := Master(e)`).
+// Repo tool: `tools/diff_processrecord.py` (must print OK when both are aligned).
 
 Function ProcessRecord(e: IwbMainRecord): integer;
 
@@ -1166,6 +1169,8 @@ Begin
              End;
     End;
 
+  // Skyrim/SSE/Enderal: RACE body/eyes/hair/relations (WB import_races_attrs);
+  // no R.Ears/Head/Mouth/Teeth here (FO3/FNV/Oblivion-only in WB).
   If wbIsSkyrim And (sSignature = 'RACE') Then
     Begin
       ProcessTag('R.Body-F', e, o);
