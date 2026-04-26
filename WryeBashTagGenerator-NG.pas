@@ -27,24 +27,6 @@
     - identical sets                                     -> nothing
 
   Known coverage gaps (docs/wrye-bash-tags.md items not yet implemented):
-    - R.Stats (Skyrim): tag entirely unimplemented. Needs a dedicated
-      ProcessTag branch evaluating RACE DATA\Starting Health/Magicka/Stamina,
-      Base Carry Weight, Health/Magicka/Stamina Regen, Unarmed Damage,
-      Unarmed Reach; plus a dispatch under the Skyrim RACE block.
-    - Names on Skyrim-specific signatures: AVIF, CLFM, EXPL, HAZD, HDPT,
-      LCTN, MESG, MSTT, PERK, SCRL, SHOU, SNCT, TACT, TREE, WATR, WOOP
-      are listed in the Wrye Bash Skyrim Names table but have no dispatch
-      here. Needs a Skyrim-only ContainsStr block.
-    - Actors.ACBS (Skyrim field coverage): the non-FO4 branch evaluates
-      Oblivion/FO3/FNV-shaped paths (Fatigue, Calc min/max, DATA\Base
-      Health) that do not exist on Skyrim. Skyrim-specific fields
-      (Magicka Offset, Stamina Offset, Disposition Base, Health Offset,
-      Bleedout Override) are never checked. Needs a Skyrim branch with
-      xEdit-schema-verified paths.
-    - Actors.AIData (Skyrim field coverage): same class of problem —
-      non-FO4 branch checks Responsibility / Teaches / Maximum training
-      level / Buys-Sells-Services, none of which exist on Skyrim AIDT.
-      Missing: Morality, Mood, Assistance, Aggro radius fields.
     - C.MiscFlags flag name: uses 'Can Travel From Here'; Wrye Bash docs
       call it 'Can't Travel From Here / Invert Fast Travel Behavior'.
       Needs verification against the actual xEdit flag-array schema
@@ -59,7 +41,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-NG';
-  ScriptVersion = '1.9.3';
+  ScriptVersion = '1.9.4';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor and Xideta';
   ScriptEmail   = 'NO SUPPORT';
@@ -926,10 +908,11 @@ End;
 Function ProcessRecord(e: IwbMainRecord): integer;
 
 Var 
-  o             : IwbMainRecord;
-  sSignature    : string;
-  ConflictState : TConflictThis;
-  iFormID       : integer;
+  o               : IwbMainRecord;
+  sSignature      : string;
+  sGfxNamesSigs   : string;
+  ConflictState   : TConflictThis;
+  iFormID         : integer;
 Begin
   ConflictState := ConflictAllForMainRecord(e);
 
@@ -1161,6 +1144,21 @@ Begin
              End;
     End;
 
+  // Skyrim/SSE/Enderal: RACE body/eyes/hair/relations (WB import_races_attrs);
+  // no R.Ears/Head/Mouth/Teeth here (FO3/FNV/Oblivion-only in WB).
+  If wbIsSkyrim And (sSignature = 'RACE') Then
+    Begin
+      ProcessTag('R.Body-F', e, o);
+      ProcessTag('R.Body-M', e, o);
+      ProcessTag('R.Body-Size-F', e, o);
+      ProcessTag('R.Body-Size-M', e, o);
+      ProcessTag('R.Eyes', e, o);
+      ProcessTag('R.Hair', e, o);
+      ProcessTag('R.Relations.Add', e, o);
+      ProcessTag('R.Relations.Change', e, o);
+      ProcessTag('R.Relations.Remove', e, o);
+    End;
+
   // -------------------------------------------------------------------------------
   // GROUP: Supported tags exclusive to FO3, FNV, TES5, SSE
   // -------------------------------------------------------------------------------
@@ -1223,6 +1221,8 @@ Begin
     Begin
       ProcessTag('R.Description', e, o);
       ProcessTag('R.Skills', e, o);
+      If wbIsSkyrim Then
+        ProcessTag('R.Stats', e, o);
       ProcessTag('R.Voice-F', e, o);
       ProcessTag('R.Voice-M', e, o);
     End;
@@ -1248,7 +1248,11 @@ Begin
       If ContainsStr('LVLC LVLI LVLN LVSP', sSignature) Then
         ProcessDelevRelevTags(e, o);
 
-      If ContainsStr('ACTI ALCH AMMO APPA ARMO BOOK BSGN CLAS CLOT DOOR FLOR FURN INGR KEYM LIGH MGEF MISC SGST SLGM WEAP', sSignature) Then
+      sGfxNamesSigs := 'ACTI ALCH AMMO APPA ARMO BOOK BSGN CLAS CLOT DOOR FLOR FURN INGR KEYM LIGH MGEF MISC SGST SLGM WEAP';
+      If wbIsSkyrim Then
+        sGfxNamesSigs := 'ACTI ALCH AMMO APPA ARMO AVIF BOOK CLAS CLFM CONT DOOR ENCH EXPL EYES FACT FLOR FURN HAZD HDPT INGR KEYM LCTN LIGH MESG MGEF MISC MSTT NPC_ PERK PROJ QUST RACE SCRL SHOU SLGM SNCT SPEL TACT TREE WATR WEAP WOOP';
+
+      If ContainsStr(sGfxNamesSigs, sSignature) Then
         Begin
           ProcessTag('Graphics', e, o);
           ProcessTag('Names', e, o);
@@ -2193,6 +2197,25 @@ Begin
           EvaluateByPath(x, y, 'Bleedout Override');
           EvaluateByPath(x, y, 'XP Value Offset');
         End
+      Else If wbIsSkyrim And (sSignature = 'NPC_') Then
+        Begin
+          a := ElementByName(x, 'Flags');
+          b := ElementByName(y, 'Flags');
+
+          If Not CompareFlags(x, y, 'Template Flags', 'Use Stats', False, False) And CompareKeys(a, b) Then
+            Exit;
+
+          EvaluateByPath(x, y, 'Magicka Offset');
+          EvaluateByPath(x, y, 'Stamina Offset');
+          EvaluateByPath(x, y, 'Level');
+          EvaluateByPath(x, y, 'Calc min level');
+          EvaluateByPath(x, y, 'Calc max level');
+          EvaluateByPath(x, y, 'Speed Multiplier');
+          EvaluateByPath(x, y, 'Disposition Base (unused)');
+          EvaluateByPath(x, y, 'Health Offset');
+          EvaluateByPath(x, y, 'Bleedout Override');
+          EvaluateByPath(x, y, 'Template Flags');
+        End
       Else
         Begin
           a := ElementByName(x, 'Flags');
@@ -2233,6 +2256,19 @@ Begin
                If CompareNativeValues(x, y, 'Aggro') Then
                  Exit;
                EvaluateByPath(x, y, 'No Slow Approach');
+             End
+           Else If wbIsSkyrim And ContainsStr('CREA NPC_', sSignature) Then
+             Begin
+               EvaluateByPath(x, y, 'Aggression');
+               EvaluateByPath(x, y, 'Confidence');
+               EvaluateByPath(x, y, 'Energy Level');
+               EvaluateByPath(x, y, 'Morality');
+               EvaluateByPath(x, y, 'Mood');
+               EvaluateByPath(x, y, 'Assistance');
+               EvaluateByPath(x, y, 'Aggro\Aggro Radius Behavior');
+               EvaluateByPath(x, y, 'Aggro\Warn');
+               EvaluateByPath(x, y, 'Aggro\Warn/Attack');
+               EvaluateByPath(x, y, 'Aggro\Attack');
              End
            Else
              Begin
@@ -2334,12 +2370,20 @@ Begin
                    EvaluateByPath(x, y, 'Attributes');
                  End
                Else If sSignature = 'NPC_' Then
-                      Begin
-                        EvaluateByPath(x, y, 'Base Health');
-                        EvaluateByPath(x, y, 'Attributes');
-                        EvaluateByPath(e, m, 'DNAM\Skill Values');
-                        EvaluateByPath(e, m, 'DNAM\Skill Offsets');
-                      End;
+                      If wbIsSkyrim Then
+                        Begin
+                          j := ElementBySignature(e, 'DNAM');
+                          k := ElementBySignature(m, 'DNAM');
+                          If Assigned(j) And Assigned(k) Then
+                            Evaluate(j, k);
+                        End
+                      Else
+                        Begin
+                          EvaluateByPath(x, y, 'Base Health');
+                          EvaluateByPath(x, y, 'Attributes');
+                          EvaluateByPath(e, m, 'DNAM\Skill Values');
+                          EvaluateByPath(e, m, 'DNAM\Skill Offsets');
+                        End;
              End;
          End
 
@@ -2993,8 +3037,8 @@ Begin
          // Match entries on Faction; only fire if a shared faction's Modifier
          // (Oblivion) or Modifier + Group Combat Reaction (non-Oblivion) differs.
          // Adds/removes go to R.Relations.Add / R.Relations.Remove.
-         // R.Relations is Oblivion/FO3/FNV only; Skyrim/FO4 never reach here
-         // in practice, but the non-Oblivion branch handles them defensively.
+         // Skyrim/SSE dispatches R.Relations.* from ProcessRecord; FO4 has no
+         // RACE relations import here. Non-Oblivion branch handles all.
   Else If (g_Tag = 'R.Relations.Change') Then
          If wbIsOblivion Then
            DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier')
@@ -3008,6 +3052,21 @@ Begin
          // Bookmark: R.Skills
   Else If (g_Tag = 'R.Skills') Then
          EvaluateByPath(e, m, 'DATA\Skill Boosts')
+
+         // Bookmark: R.Stats (TES5/SSE/Enderal — WB import_races_attrs DATA)
+  Else If (g_Tag = 'R.Stats') Then
+         If wbIsSkyrim And (sSignature = 'RACE') Then
+           Begin
+             EvaluateByPath(e, m, 'DATA\Starting Health');
+             EvaluateByPath(e, m, 'DATA\Starting Magicka');
+             EvaluateByPath(e, m, 'DATA\Starting Stamina');
+             EvaluateByPath(e, m, 'DATA\Base Carry Weight');
+             EvaluateByPath(e, m, 'DATA\Health Regen');
+             EvaluateByPath(e, m, 'DATA\Magicka Regen');
+             EvaluateByPath(e, m, 'DATA\Stamina Regen');
+             EvaluateByPath(e, m, 'DATA\Unarmed Damage');
+             EvaluateByPath(e, m, 'DATA\Unarmed Reach');
+           End
 
          // Bookmark: R.Teeth
   Else If (g_Tag = 'R.Teeth') Then
