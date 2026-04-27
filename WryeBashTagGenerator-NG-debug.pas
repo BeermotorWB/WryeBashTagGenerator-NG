@@ -38,7 +38,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-NG-debug';
-  ScriptVersion = '1.9.5-debug';
+  ScriptVersion = '1.9.7-debug';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor and Xideta';
   ScriptEmail   = 'NO SUPPORT';
@@ -820,13 +820,27 @@ Begin
 End;
 
 
+// Gate ProcessTag on the template flag named AFlagName under 'ACBS\Template Flags'.
+// If the flag is set on either side (master or override), the NPC/CREA inherits
+// that subrecord from its template and overriding it would be a no-op, so we
+// skip. Otherwise emit the tag. Mirrors the g_Tag := ATag; If Not CompareFlags(...)
+// Then ProcessTag(ATag, ...) idiom used throughout ProcessRecord.
+Procedure TryTagGatedByFlag(Const ATag, AFlagName: String; e, o: IInterface);
+Begin
+  g_Tag := ATag;
+  If Not CompareFlags(e, o, 'ACBS\Template Flags', AFlagName, False, False) Then
+    ProcessTag(ATag, e, o);
+End;
+
+
 Function ProcessRecord(e: IwbMainRecord): integer;
 
 Var 
-  o             : IwbMainRecord;
-  sSignature    : string;
-  ConflictState : TConflictThis;
-  iFormID       : integer;
+  o               : IwbMainRecord;
+  sSignature      : string;
+  sGfxNamesSigs   : string;
+  ConflictState   : TConflictThis;
+  iFormID         : integer;
 Begin
   g_DebugCurrentRecord := e;
   ConflictState        := ConflictAllForMainRecord(e);
@@ -933,7 +947,7 @@ Begin
           ProcessTag('C.SkyLighting', e, o);
         End;
 
-      If ContainsStr('ACTI ALCH AMMO ARMO BOOK FLOR FURN INGR KEYM LCTN MGEF MISC NPC_ SCRL SLGM SPEL TACT WEAP', sSignature) Then
+      If ContainsStr('ACTI ALCH AMMO ARMO BOOK FLOR FURN INGR KEYM LCTN MGEF MISC NPC_ RACE SCRL SLGM SPEL TACT WEAP', sSignature) Then
         ProcessTag('Keywords', e, o);
 
       If sSignature = 'FACT' Then
@@ -949,19 +963,11 @@ Begin
           ProcessTag('NPC.Perks.Change', e, o);
           ProcessTag('NPC.Perks.Remove', e, o);
 
-          g_Tag := 'Actors.Factions';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Factions', False, False) Then
-            ProcessTag('Actors.Factions', e, o);
-
-          g_Tag := 'NPC.AIPackageOverrides';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use AI Packages', False, False) Then
-            ProcessTag('NPC.AIPackageOverrides', e, o);
-
+          TryTagGatedByFlag('Actors.Factions',        'Use Factions',     e, o);
+          TryTagGatedByFlag('NPC.AIPackageOverrides', 'Use AI Packages',  e, o);
           // Skyrim/SSE Actors.Spells — skip if the NPC inherits its spell list
           // from a template (modifying SPLO directly would be ignored by the engine).
-          g_Tag := 'Actors.Spells';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Spell List', False, False) Then
-            ProcessTag('Actors.Spells', e, o);
+          TryTagGatedByFlag('Actors.Spells',          'Use Spell List',   e, o);
 
           ProcessTag('NPC.AttackRace', e, o);
           ProcessTag('NPC.CrimeFaction', e, o);
@@ -979,6 +985,19 @@ Begin
       // -> R.ChangeSpells) using the per-game SPLO array path.
       If sSignature = 'RACE' Then
         ProcessRaceSpells(e, o);
+
+      // COBJ (Constructible Object) inventory on Skyrim+. Uses the same
+      // 'Items' / CNTO shape as CONT, so the standard Invent.* handlers apply.
+      If sSignature = 'COBJ' Then
+        Begin
+          ProcessTag('Invent.Add', e, o);
+          ProcessTag('Invent.Change', e, o);
+          ProcessTag('Invent.Remove', e, o);
+        End;
+
+      // Import Destructible (skyrim __init__ destructible_types; no FO3 FNV gating).
+      If ContainsStr('ACTI ALCH AMMO APPA ARMO BOOK CONT DOOR FLOR FURN KEYM LIGH MISC MSTT NPC_ PROJ SCRL SLGM TACT WEAP', sSignature) Then
+        ProcessTag('Destructible', e, o);
     End;
 
   // -------------------------------------------------------------------------------
@@ -989,14 +1008,12 @@ Begin
       If sSignature = 'FLST' Then
         ProcessTag('Deflst', e, o);
 
-      g_Tag := 'Destructible';
       If ContainsStr('ACTI ALCH AMMO BOOK CONT DOOR FURN IMOD KEYM MISC MSTT PROJ TACT TERM WEAP', sSignature) Then
         ProcessTag('Destructible', e, o)
 
         // special handling for CREA and NPC_ record types
       Else If ContainsStr('CREA NPC_', sSignature) Then
-             If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Model/Animation', False, False) Then
-               ProcessTag('Destructible', e, o)
+             TryTagGatedByFlag('Destructible', 'Use Model/Animation', e, o)
 
                // added in Wrye Bash 307 Beta 6
       Else If sSignature = 'FACT' Then
@@ -1049,7 +1066,28 @@ Begin
                ProcessTag('R.Relations.Add', e, o);
                ProcessTag('R.Relations.Change', e, o);
                ProcessTag('R.Relations.Remove', e, o);
+               // R.Ears/Head/Mouth/Teeth are Oblivion/FO3/FNV-only per Wrye
+               // Bash; emitted here rather than in the FO3/FNV/Skyrim block.
+               ProcessTag('R.Ears', e, o);
+               ProcessTag('R.Head', e, o);
+               ProcessTag('R.Mouth', e, o);
+               ProcessTag('R.Teeth', e, o);
              End;
+    End;
+
+  // Skyrim/SSE/Enderal: RACE body/eyes/hair/relations (WB import_races_attrs);
+  // no R.Ears/Head/Mouth/Teeth here (FO3/FNV/Oblivion-only in WB).
+  If wbIsSkyrim And (sSignature = 'RACE') Then
+    Begin
+      ProcessTag('R.Body-F', e, o);
+      ProcessTag('R.Body-M', e, o);
+      ProcessTag('R.Body-Size-F', e, o);
+      ProcessTag('R.Body-Size-M', e, o);
+      ProcessTag('R.Eyes', e, o);
+      ProcessTag('R.Hair', e, o);
+      ProcessTag('R.Relations.Add', e, o);
+      ProcessTag('R.Relations.Change', e, o);
+      ProcessTag('R.Relations.Remove', e, o);
     End;
 
   // -------------------------------------------------------------------------------
@@ -1059,21 +1097,12 @@ Begin
     Begin
       If ContainsStr('CREA NPC_', sSignature) Then
         Begin
-          g_Tag := 'Actors.ACBS';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Stats', False, False) Then
-            ProcessTag('Actors.ACBS', e, o);
-
-          g_Tag := 'Actors.AIData';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use AI Data', False, False) Then
-            ProcessTag('Actors.AIData', e, o);
-
-          g_Tag := 'Actors.AIPackages';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use AI Packages', False, False) Then
-            ProcessTag('Actors.AIPackages', e, o);
+          TryTagGatedByFlag('Actors.ACBS',      'Use Stats',        e, o);
+          TryTagGatedByFlag('Actors.AIData',    'Use AI Data',      e, o);
+          TryTagGatedByFlag('Actors.AIPackages','Use AI Packages',  e, o);
 
           If sSignature = 'CREA' Then
-            If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Model/Animation', False, False) Then
-              ProcessTag('Actors.Anims', e, o);
+            TryTagGatedByFlag('Actors.Anims',   'Use Model/Animation', e, o);
 
           If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Traits', False, False) Then
             Begin
@@ -1081,41 +1110,25 @@ Begin
               ProcessTag('Actors.DeathItem', e, o);
             End;
 
-          g_Tag := 'Actors.Skeleton';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Model/Animation', False, False) Then
-            ProcessTag('Actors.Skeleton', e, o);
-
-          g_Tag := 'Actors.Stats';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Stats', False, False) Then
-            ProcessTag('Actors.Stats', e, o);
+          TryTagGatedByFlag('Actors.Skeleton',  'Use Model/Animation', e, o);
+          TryTagGatedByFlag('Actors.Stats',     'Use Stats',           e, o);
 
           If wbIsFallout3 Or wbIsFalloutNV Or (sSignature = 'NPC_') Then
             ProcessTag('Actors.Voice', e, o);
 
           If sSignature = 'NPC_' Then
             Begin
-              g_Tag := 'NPC.Class';
-              If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Traits', False, False) Then
-                ProcessTag('NPC.Class', e, o);
-
-              g_Tag := 'NPC.Race';
-              If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Traits', False, False) Then
-                ProcessTag('NPC.Race', e, o);
+              TryTagGatedByFlag('NPC.Class', 'Use Traits', e, o);
+              TryTagGatedByFlag('NPC.Race',  'Use Traits', e, o);
             End;
 
-          g_Tag := 'Scripts';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Script', False, False) Then
-            ProcessTag(g_Tag, e, o);
+          TryTagGatedByFlag('Scripts', 'Use Script', e, o);
 
           // FO3/FNV Actors.Spells (CREA + NPC_). Skyrim/SSE NPC_ Actors.Spells is
           // handled by the dedicated wbIsSkyrim NPC_ block above. The FNV/FO3
           // template flag is named 'Use Actor Effect List' (not 'Use Spell List').
           If wbIsFallout3 Or wbIsFalloutNV Then
-            Begin
-              g_Tag := 'Actors.Spells';
-              If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Actor Effect List', False, False) Then
-                ProcessTag('Actors.Spells', e, o);
-            End;
+            TryTagGatedByFlag('Actors.Spells', 'Use Actor Effect List', e, o);
         End;
 
       If sSignature = 'CELL' Then
@@ -1126,20 +1139,23 @@ Begin
           ProcessTag('C.ImageSpace', e, o);
         End;
 
-      If sSignature = 'RACE' Then
-        Begin
-          ProcessTag('R.Ears', e, o);
-          ProcessTag('R.Head', e, o);
-          ProcessTag('R.Mouth', e, o);
-          ProcessTag('R.Teeth', e, o);
-          ProcessTag('R.Skills', e, o);
-          ProcessTag('R.Description', e, o);
-          ProcessTag('R.Voice-F', e, o);
-          ProcessTag('R.Voice-M', e, o);
-        End;
-
       If ContainsStr('ACTI ALCH ARMO CONT DOOR FLOR FURN INGR KEYM LIGH LVLC MISC QUST WEAP', sSignature) Then
         ProcessTag('Scripts', e, o);
+    End;
+
+  // -------------------------------------------------------------------------------
+  // GROUP: RACE tags supported on every game except FO4.
+  // R.Description / R.Skills / R.Voice-F / R.Voice-M apply to Oblivion,
+  // FO3/FNV, and Skyrim per Wrye Bash.
+  // -------------------------------------------------------------------------------
+  If Not wbIsFallout4 And (sSignature = 'RACE') Then
+    Begin
+      ProcessTag('R.Description', e, o);
+      ProcessTag('R.Skills', e, o);
+      If wbIsSkyrim Then
+        ProcessTag('R.Stats', e, o);
+      ProcessTag('R.Voice-F', e, o);
+      ProcessTag('R.Voice-M', e, o);
     End;
 
   // -------------------------------------------------------------------------------
@@ -1156,14 +1172,25 @@ Begin
           ProcessTag('C.Name', e, o);
           ProcessTag('C.Owner', e, o);
           ProcessTag('C.RecordFlags', e, o);
+          // C.Regions: FO3 FNV Oblivion cellRecAttrs; Skyrim emits above (wbIsSkyrim block).
+          If Not wbIsSkyrim Then
+            ProcessTag('C.Regions', e, o);
           ProcessTag('C.Water', e, o);
         End;
 
-      // TAG: Delev, Relev
-      If ContainsStr('LVLC LVLI LVLN LVSP', sSignature) Then
+      // Delev, Relev — leveled list types per game (bush.game.leveled_list_types)
+      If (wbIsOblivion Or wbIsOblivionR) And ContainsStr('LVLC LVLI LVSP', sSignature) Then
+        ProcessDelevRelevTags(e, o);
+      If (wbIsFallout3 Or wbIsFalloutNV) And ContainsStr('LVLC LVLI LVLN', sSignature) Then
+        ProcessDelevRelevTags(e, o);
+      If wbIsSkyrim And ContainsStr('LVLI LVLN LVSP', sSignature) Then
         ProcessDelevRelevTags(e, o);
 
-      If ContainsStr('ACTI ALCH AMMO APPA ARMO BOOK BSGN CLAS CLOT DOOR FLOR FURN INGR KEYM LIGH MGEF MISC SGST SLGM WEAP', sSignature) Then
+      sGfxNamesSigs := 'ACTI ALCH AMMO APPA ARMO BOOK BSGN CLAS CLOT DOOR FLOR FURN INGR KEYM LIGH MGEF MISC SGST SLGM WEAP';
+      If wbIsSkyrim Then
+        sGfxNamesSigs := 'ACTI ALCH AMMO APPA ARMO AVIF BOOK CLAS CLFM CONT DOOR ENCH EXPL EYES FACT FLOR FURN HAZD HDPT INGR KEYM LCTN LIGH MESG MGEF MISC MSTT NPC_ PERK PROJ QUST RACE SCRL SHOU SLGM SNCT SPEL TACT TREE WATR WEAP WOOP';
+
+      If ContainsStr(sGfxNamesSigs, sSignature) Then
         Begin
           ProcessTag('Graphics', e, o);
           ProcessTag('Names', e, o);
@@ -1230,28 +1257,13 @@ Begin
 
           If Not (wbIsOblivion Or wbIsOblivionR) Then
             Begin
-              g_Tag := 'Invent.Add';
-              If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Inventory', False, False) Then
-                ProcessTag(g_Tag, e, o);
+              TryTagGatedByFlag('Invent.Add',    'Use Inventory', e, o);
+              TryTagGatedByFlag('Invent.Change', 'Use Inventory', e, o);
+              TryTagGatedByFlag('Invent.Remove', 'Use Inventory', e, o);
+              TryTagGatedByFlag('Names',         'Use Base Data', e, o);
 
-              g_Tag := 'Invent.Change';
-              If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Inventory', False, False) Then
-                ProcessTag(g_Tag, e, o);
-
-              g_Tag := 'Invent.Remove';
-              If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Inventory', False, False) Then
-                ProcessTag(g_Tag, e, o);
-
-              // special handling for CREA and NPC_ record types
-              g_Tag := 'Names';
-              If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Base Data', False, False) Then
-                ProcessTag(g_Tag, e, o);
-
-              // special handling for CREA record type
-              g_Tag := 'Sound';
               If sSignature = 'CREA' Then
-                If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Model/Animation', False, False) Then
-                  ProcessTag(g_Tag, e, o);
+                TryTagGatedByFlag('Sound', 'Use Model/Animation', e, o);
             End;
         End;
     End;
@@ -1263,17 +1275,9 @@ Begin
     Begin
       If sSignature = 'NPC_' Then
         Begin
-          g_Tag := 'Actors.ACBS';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Stats', False, False) Then
-            ProcessTag('Actors.ACBS', e, o);
-
-          g_Tag := 'Actors.AIData';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'AI Data', False, False) Then
-            ProcessTag('Actors.AIData', e, o);
-
-          g_Tag := 'Actors.AIPackages';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'AI Packages', False, False) Then
-            ProcessTag('Actors.AIPackages', e, o);
+          TryTagGatedByFlag('Actors.ACBS',           'Stats',       e, o);
+          TryTagGatedByFlag('Actors.AIData',         'AI Data',     e, o);
+          TryTagGatedByFlag('Actors.AIPackages',     'AI Packages', e, o);
 
           If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Traits', False, False) Then
             Begin
@@ -1281,52 +1285,29 @@ Begin
               ProcessTag('Actors.DeathItem', e, o);
             End;
 
-          g_Tag := 'Actors.Stats';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Stats', False, False) Then
-            ProcessTag('Actors.Stats', e, o);
+          TryTagGatedByFlag('Actors.Stats',          'Stats',       e, o);
 
           ProcessTag('Actors.Voice', e, o);
           ProcessTag('Actors.RecordFlags', e, o);
 
-          g_Tag := 'NPC.Class';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Traits', False, False) Then
-            ProcessTag('NPC.Class', e, o);
-
-          g_Tag := 'NPC.Race';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Traits', False, False) Then
-            ProcessTag('NPC.Race', e, o);
+          TryTagGatedByFlag('NPC.Class',             'Traits',      e, o);
+          TryTagGatedByFlag('NPC.Race',              'Traits',      e, o);
 
           ProcessTag('NPC.Perks.Add', e, o);
           ProcessTag('NPC.Perks.Change', e, o);
           ProcessTag('NPC.Perks.Remove', e, o);
 
-          g_Tag := 'Actors.Factions';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Factions', False, False) Then
-            ProcessTag('Actors.Factions', e, o);
-
-          g_Tag := 'NPC.AIPackageOverrides';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'AI Packages', False, False) Then
-            ProcessTag('NPC.AIPackageOverrides', e, o);
+          TryTagGatedByFlag('Actors.Factions',       'Factions',    e, o);
+          TryTagGatedByFlag('NPC.AIPackageOverrides','AI Packages', e, o);
 
           ProcessTag('NPC.AttackRace', e, o);
           ProcessTag('NPC.CrimeFaction', e, o);
           ProcessTag('NPC.DefaultOutfit', e, o);
 
-          g_Tag := 'Invent.Add';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Inventory', False, False) Then
-            ProcessTag(g_Tag, e, o);
-
-          g_Tag := 'Invent.Change';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Inventory', False, False) Then
-            ProcessTag(g_Tag, e, o);
-
-          g_Tag := 'Invent.Remove';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Inventory', False, False) Then
-            ProcessTag(g_Tag, e, o);
-
-          g_Tag := 'Names';
-          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Base Data', False, False) Then
-            ProcessTag(g_Tag, e, o);
+          TryTagGatedByFlag('Invent.Add',    'Inventory', e, o);
+          TryTagGatedByFlag('Invent.Change', 'Inventory', e, o);
+          TryTagGatedByFlag('Invent.Remove', 'Inventory', e, o);
+          TryTagGatedByFlag('Names',         'Base Data', e, o);
 
           ProcessTag('Actors.Spells', e, o);
         End;
@@ -1348,6 +1329,14 @@ Begin
         End;
 
       If sSignature = 'FURN' Then
+        Begin
+          ProcessTag('Invent.Add', e, o);
+          ProcessTag('Invent.Change', e, o);
+          ProcessTag('Invent.Remove', e, o);
+        End;
+
+      // WB inventory_types: CONT, FURN, NPC_. COBJ shares list/inventory import patterns for recipes.
+      If sSignature = 'COBJ' Then
         Begin
           ProcessTag('Invent.Add', e, o);
           ProcessTag('Invent.Change', e, o);
@@ -3133,6 +3122,21 @@ Begin
          // Bookmark: R.Skills
   Else If (g_Tag = 'R.Skills') Then
          EvaluateByPath(e, m, 'DATA\Skill Boosts')
+
+         // Bookmark: R.Stats (TES5/SSE/Enderal — WB import_races_attrs DATA)
+  Else If (g_Tag = 'R.Stats') Then
+         If wbIsSkyrim And (sSignature = 'RACE') Then
+           Begin
+             EvaluateByPath(e, m, 'DATA\Starting Health');
+             EvaluateByPath(e, m, 'DATA\Starting Magicka');
+             EvaluateByPath(e, m, 'DATA\Starting Stamina');
+             EvaluateByPath(e, m, 'DATA\Base Carry Weight');
+             EvaluateByPath(e, m, 'DATA\Health Regen');
+             EvaluateByPath(e, m, 'DATA\Magicka Regen');
+             EvaluateByPath(e, m, 'DATA\Stamina Regen');
+             EvaluateByPath(e, m, 'DATA\Unarmed Damage');
+             EvaluateByPath(e, m, 'DATA\Unarmed Reach');
+           End
 
          // Bookmark: R.Teeth
   Else If (g_Tag = 'R.Teeth') Then

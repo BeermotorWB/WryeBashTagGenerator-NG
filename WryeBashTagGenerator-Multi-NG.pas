@@ -41,7 +41,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-Multi-NG';
-  ScriptVersion = '1.9.5';
+  ScriptVersion = '1.9.7';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor and Xideta';
   ScriptEmail   = 'NO SUPPORT';
@@ -1086,6 +1086,10 @@ Begin
           ProcessTag('Invent.Change', e, o);
           ProcessTag('Invent.Remove', e, o);
         End;
+
+      // Import Destructible (skyrim __init__ destructible_types; no FO3 FNV gating).
+      If ContainsStr('ACTI ALCH AMMO APPA ARMO BOOK CONT DOOR FLOR FURN KEYM LIGH MISC MSTT NPC_ PROJ SCRL SLGM TACT WEAP', sSignature) Then
+        ProcessTag('Destructible', e, o);
     End;
 
   // -------------------------------------------------------------------------------
@@ -1266,11 +1270,18 @@ Begin
           ProcessTag('C.Name', e, o);
           ProcessTag('C.Owner', e, o);
           ProcessTag('C.RecordFlags', e, o);
+          // C.Regions: FO3 FNV Oblivion cellRecAttrs; Skyrim emits above (wbIsSkyrim block).
+          If Not wbIsSkyrim Then
+            ProcessTag('C.Regions', e, o);
           ProcessTag('C.Water', e, o);
         End;
 
-      // TAG: Delev, Relev
-      If ContainsStr('LVLC LVLI LVLN LVSP', sSignature) Then
+      // Delev, Relev — leveled list types per game (bush.game.leveled_list_types)
+      If wbIsOblivion And ContainsStr('LVLC LVLI LVSP', sSignature) Then
+        ProcessDelevRelevTags(e, o);
+      If (wbIsFallout3 Or wbIsFalloutNV) And ContainsStr('LVLC LVLI LVLN', sSignature) Then
+        ProcessDelevRelevTags(e, o);
+      If wbIsSkyrim And ContainsStr('LVLI LVLN LVSP', sSignature) Then
         ProcessDelevRelevTags(e, o);
 
       sGfxNamesSigs := 'ACTI ALCH AMMO APPA ARMO BOOK BSGN CLAS CLOT DOOR FLOR FURN INGR KEYM LIGH MGEF MISC SGST SLGM WEAP';
@@ -1424,6 +1435,7 @@ Begin
           ProcessTag('Invent.Remove', e, o);
         End;
 
+      // WB inventory_types: CONT, FURN, NPC_. COBJ shares list/inventory import patterns for recipes.
       If sSignature = 'COBJ' Then
         Begin
           ProcessTag('Invent.Add', e, o);
