@@ -31,15 +31,6 @@ The main script operates on **one plugin per invocation**. If you launch it agai
 
 Use this when you want to run the same tag scan across **many plugins in one go** (select multiple plugins in xEdit, then apply the script). It is **not** a full load-order reconciliation tool: each plugin is processed independently, and comparisons are anchored to **stock / base-game masters only** (other loaded mods are not treated as “context” for correctness).
 
-Compared to the main script:
-
-| Behavior | Main (`WryeBashTagGenerator-NG.pas`) | Multi (`WryeBashTagGenerator-Multi-NG.pas`) |
-|----------|--------------------------------------|---------------------------------------------|
-| Selection | **Exactly one** plugin per run | **One or many** plugins per run |
-| Header vs BashTags file mismatch (when file writes are enabled) | **Stricter guardrail**: user is prompted (**Abort** stops the run; **Ignore** skips writes for that plugin only) so you do not silently pick a “winner” between two disagreeing tag sources | **Batch convenience**: mismatch **auto-skips** writes for that plugin and **continues** with the next (no silent overwrite of conflicting sources) |
-| Default log verbosity | Same defaults as main | **Test logging** and **Tag↔Record relationship** output default **off** to keep batch runs readable (use `-debug` for deep traces) |
-
-`ProcessTag` and helpers are shared in spirit, but `ProcessRecord` is duplicated. It should match the main script **except** the Multi-only walk to a **stock** master for `o` (see the comment above `ProcessRecord` in the Multi source). To verify parity, diff the two `ProcessRecord` functions directly, accounting for that stock-master walk.
 
 ## Options dialog
 
@@ -55,7 +46,7 @@ Four checkboxes:
 
 ## Output
 
-- `{{BASH:...}}` block in the plugin description is normalized via Wrye Bash's `_tag_aliases` map and written back to `SNAM` if the header option is on.
+- `{{BASH:...}}` block in the plugin description is normalized via Wrye Bash's `_tag_aliases` map.
 - If the existing description already contains deprecated tag names (e.g. `Factions`, `NpcFaces`, `Voice-F`), the script prompts before rewriting; declining keeps the original description untouched.
 - `BashTags\<plugin>.txt` (when enabled) always contains canonical tag names only.
 
@@ -88,7 +79,7 @@ If the BashTags file's additive tag set already matches what the script would wr
 
 ## Tag canonicalization
 
-Tag names follow current Wrye Bash conventions. The script normalizes every deprecated alias below to its modern replacement(s) before writing the `{{BASH:...}}` block. This mirrors `Mopy/bash/bosh/__init__.py` `_tag_aliases` + `_removed_tags` in Wrye Bash; see `ExpandOneAliasTo` in the script for the authoritative table.
+Tag names follow current Wrye Bash conventions. The script normalizes every deprecated alias below to its modern replacement(s) before writing out tags; see `ExpandOneAliasTo` in the script for the authoritative table.
 
 | Deprecated tag (old) | Replacement tag(s) (new) |
 |----------------------|--------------------------|
@@ -131,38 +122,6 @@ When the **Suggest heuristic Force* tags** checkbox is on, the script also emits
 
 Detections route through the same logging plumbing as the standard tags, so they appear in `Show Tag to Record Relationships` output with explicit "heuristic" reasons. Review heuristic suggestions before committing them to the header.
 
-## RACE Spells split (Oblivion + Skyrim/SSE/Enderal)
-
-For `RACE` records, the script splits a single `R.ChangeSpells` emission into two mutually exclusive tags based on a list-diff of the SPLO array (`Spells` on TES4, `Actor Effects` on TES5/SSE/Enderal):
-
-| Master vs Override | Tag emitted |
-|--------------------|-------------|
-| Override removes any SPEL the master had | `R.ChangeSpells` (full override required to drop SPELs) |
-| Override adds SPELs and removes none | `R.AddSpells` (additive merge sufficient; preserves other mods' adds) |
-| Identical sets | nothing |
-
-`R.AddSpells` is the correct mode for additive merging across mods.
-
-## v1.9.1.0 — bug fixes
-
-- `Actors.Spells` / `Actors.SpellsForceAdd`: handler walked `Spells` on Skyrim/SSE/FO3/FNV where the SPLO array is actually named `Actor Effects`. Path is now per-game (Oblivion = `Spells`, everything else = `Actor Effects`).
-- `Actors.Spells` had no call site for FO3/FNV — added (`CREA` + `NPC_`, gated by FNV/FO3 `Use Actor Effect List` template flag).
-- `Outfits.Add` / `Outfits.Remove`: handler walked the OTFT record signature instead of its `Items` (INAM) child array, so it never fired on any game. Fixed for Skyrim, SSE, FO4.
-- `NPC.Race` and `NPC.Class` were never emitted for Oblivion NPCs (only Eyes / FaceGen / Hair were). Added; no template-flag gating since Oblivion has no template system.
-- `R.AddSpells` / `R.ChangeSpells`: previously only emitted for Oblivion RACE records. Now also emitted for Skyrim/SSE/Enderal via the same `ProcessRaceSpells` Add/Change split, with the SPLO array path made game-aware.
-
-## 1.9.2.0 - multifile
-- Added back multifile support, plus safeguards for independant plugin tagging.
-
-## 1.9.2.1 - bug fixes and deduplication
-- wbIsOblivion also tested for Oblivion Remastered, making explicitly testing for it redundant.
-- wbIsOblivionR tests were previously added in a way where operator precedence could mean incorrect predicates.
-- Moved making standardized sets to its own function.
-- Moved repeated `ACBS\\Template Flags` tests to function.
-- Removed unused variables.
-- Further deduplication and misc edge case fixes.
-
-## v1.9.7 — ProcessRecord pass + aligned `ScriptVersion`
 
 **Versions:** **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-NG.pas`** → **`1.9.7`**; **`WryeBashTagGenerator-NG-debug.pas`** → **`1.9.7-debug`** (same `ProcessRecord` and **`TryTagGatedByFlag`** as main; extra debug logging only in the debug script).
 
@@ -201,6 +160,27 @@ Applies to **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-N
   - `WryeBashTagGenerator-NG.pas` — **single-plugin**, stricter user prompts so you do not silently pick a “winner” when the plugin header and `BashTags` file disagree.
   - `WryeBashTagGenerator-Multi-NG.pas` — **batch** convenience: run across many selected plugins; mismatches between header and `BashTags` file **auto-skip** writes for that plugin and **continue** (see Multifile section above).
 - **Roadmap**: **v1.9.3** is the last **1.9** cut before promoting `dev` to the next **main**; the next `main` release is planned as **v2.0** (bump all script versions accordingly when that happens).
+
+## 1.9.2.1 - bug fixes and deduplication
+- wbIsOblivion also tested for Oblivion Remastered, making explicitly testing for it redundant.
+- wbIsOblivionR tests were previously added in a way where operator precedence could mean incorrect predicates.
+- Moved making standardized sets to its own function.
+- Moved repeated `ACBS\\Template Flags` tests to function.
+- Removed unused variables.
+- Further deduplication and misc edge case fixes.
+
+## 1.9.2.0 - multifile
+- Added back multifile support, plus safeguards for independant plugin tagging.
+
+## v1.9.1.0 — bug fixes
+
+- `Actors.Spells` / `Actors.SpellsForceAdd`: handler walked `Spells` on Skyrim/SSE/FO3/FNV where the SPLO array is actually named `Actor Effects`. Path is now per-game (Oblivion = `Spells`, everything else = `Actor Effects`).
+- `Actors.Spells` had no call site for FO3/FNV — added (`CREA` + `NPC_`, gated by FNV/FO3 `Use Actor Effect List` template flag).
+- `Outfits.Add` / `Outfits.Remove`: handler walked the OTFT record signature instead of its `Items` (INAM) child array, so it never fired on any game. Fixed for Skyrim, SSE, FO4.
+- `NPC.Race` and `NPC.Class` were never emitted for Oblivion NPCs (only Eyes / FaceGen / Hair were). Added; no template-flag gating since Oblivion has no template system.
+- `R.AddSpells` / `R.ChangeSpells`: previously only emitted for Oblivion RACE records. Now also emitted for Skyrim/SSE/Enderal via the same `ProcessRaceSpells` Add/Change split, with the SPLO array path made game-aware.
+
+
 
 ## Credits
 
