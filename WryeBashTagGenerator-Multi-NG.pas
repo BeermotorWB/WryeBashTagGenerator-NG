@@ -920,7 +920,6 @@ End;
 
 // ProcessRecord: keep the body line-for-line in sync with WryeBashTagGenerator-NG.pas
 // except for the Multi-only stock-master `While` walk (after `o := Master(e)`).
-// Repo tool: `tools/diff_processrecord.py` (must print OK when both are aligned).
 
 Function ProcessRecord(e: IwbMainRecord): integer;
 
