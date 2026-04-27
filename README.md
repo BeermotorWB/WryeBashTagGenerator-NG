@@ -123,7 +123,12 @@ When the **Suggest heuristic Force* tags** checkbox is on, the script also emits
 Detections route through the same logging plumbing as the standard tags, so they appear in `Show Tag to Record Relationships` output with explicit "heuristic" reasons. Review heuristic suggestions before committing them to the header.
 
 
-**Versions:** **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-NG.pas`** → **`1.9.7`**; **`WryeBashTagGenerator-NG-debug.pas`** → **`1.9.7-debug`** (same `ProcessRecord` and **`TryTagGatedByFlag`** as main; extra debug logging only in the debug script).
+## v1.9.7 — ProcessRecord pass + aligned `ScriptVersion`
+
+**Versions**
+
+- **`WryeBashTagGenerator-NG.pas`** / **`WryeBashTagGenerator-Multi-NG.pas`**: **`1.9.7`**
+- **`WryeBashTagGenerator-NG-debug.pas`**: **`1.9.7-debug`** (same `ProcessRecord` and `TryTagGatedByFlag` structure as main; extra debug logging only)
 
 - **`C.Regions` on `CELL`**: Emitted for Fallout 3, New Vegas, and Oblivion (Wrye Bash `cellRecAttrs`); Skyrim/SSE still uses the Skyrim-only `CELL` block (unchanged) so `C.Regions` is not double-processed.
 - **Delev / Relev** (`ProcessDelevRelevTags`): `ContainsStr` for leveled list signatures now matches **`bush.game.leveled_list_types` per game** — Oblivion: `LVLC` `LVLI` `LVSP`; Fallout 3 / NV: `LVLC` `LVLI` `LVLN`; Skyrim/SSE: `LVLI` `LVLN` `LVSP` (no longer treats every game as all four).
@@ -179,8 +184,6 @@ Applies to **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-N
 - `Outfits.Add` / `Outfits.Remove`: handler walked the OTFT record signature instead of its `Items` (INAM) child array, so it never fired on any game. Fixed for Skyrim, SSE, FO4.
 - `NPC.Race` and `NPC.Class` were never emitted for Oblivion NPCs (only Eyes / FaceGen / Hair were). Added; no template-flag gating since Oblivion has no template system.
 - `R.AddSpells` / `R.ChangeSpells`: previously only emitted for Oblivion RACE records. Now also emitted for Skyrim/SSE/Enderal via the same `ProcessRaceSpells` Add/Change split, with the SPLO array path made game-aware.
-
-
 
 ## Credits
 
