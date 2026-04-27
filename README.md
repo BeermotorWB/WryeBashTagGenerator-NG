@@ -121,9 +121,10 @@ When the **Suggest heuristic Force* tags** checkbox is on, the script also emits
 | `NpcFacesForceFullImport` | NPC differs from master in eyes (`ENAM`), hair (`HNAM`), AND face geometry (`FaceGen Data`) simultaneously | Pure cosmetic NPC overhauls that swap all three but don't actually need full face import. |
 
 Detections route through the same logging plumbing as the standard tags, so they appear in `Show Tag to Record Relationships` output with explicit "heuristic" reasons. Review heuristic suggestions before committing them to the header.
+---
+## Version History
 
-
-## v1.9.7 — ProcessRecord pass + aligned `ScriptVersion`
+### v1.9.7 — ProcessRecord pass + aligned `ScriptVersion`
 
 **Versions**
 
@@ -136,7 +137,7 @@ Detections route through the same logging plumbing as the standard tags, so they
 - **Fallout 4 `COBJ` + `Invent.*`**: Comment notes Wrye Bash `inventory_types` (CONT, FURN, NPC_) vs recipe/constructible handling.
 - **Debug script:** `ProcessRecord` brought in line with main/Multi for this release; **`TryTagGatedByFlag`** helper and all matching template-flag gates use the same structure as **`WryeBashTagGenerator-NG.pas`**.
 
-## v1.9.5 — Fallout 4 spot-check (Wrye Bash–aligned branches)
+### v1.9.5 — Fallout 4 spot-check (Wrye Bash–aligned branches)
 
 Applies to **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-NG.pas`**.
 
@@ -147,7 +148,7 @@ Applies to **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-N
 - **Debug** (`WryeBashTagGenerator-NG-debug.pas`): same **FO4** `ProcessTag` updates as above; FO4 **ObjectBounds** matches main (includes **`BNDS`**).
 - **Multi** (`WryeBashTagGenerator-Multi-NG.pas`): `ProcessRecord` re-synced with main (one drift: missing RACE block comments); in-source comment notes the intended parity (aside from the stock-master `o` walk).
 
-## v1.9.4 — Skyrim/SSE importer parity (Wrye Bash)
+### v1.9.4 — Skyrim/SSE importer parity (Wrye Bash)
 
 Applies to **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-NG.pas`** (same behavior).
 
@@ -158,7 +159,7 @@ Applies to **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-N
 - **`Names` (+ bundled `Graphics` / `Stats` dispatch)**: Skyrim signature list expanded to match Wrye Bash Skyrim **`names_types`** (e.g. `AVIF`, `CLFM`, `CONT`, `LCTN`, `NPC_`, `QUST`, `SPEL`, …).
 - **Script header**: removed stale “known gap” bullets for the items above; **only** the **`C.MiscFlags`** / xEdit vs docs wording note remains (NG still uses xEdit’s `Can Travel From Here` label for bit 2, which is the same field Wrye Bash calls `cantFastTravel`).
 
-## v1.9.3 — merged NG + Multifile line
+### v1.9.3 — merged NG + Multifile line
 
 - **Merge point**: this release rolls the ongoing **1.9.1.x** quality fixes together with the **1.9.2.x** Multifile work into one coherent `dev` line.
 - **Two deliverables**:
@@ -166,7 +167,8 @@ Applies to **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-N
   - `WryeBashTagGenerator-Multi-NG.pas` — **batch** convenience: run across many selected plugins; mismatches between header and `BashTags` file **auto-skip** writes for that plugin and **continue** (see Multifile section above).
 - **Roadmap**: **v1.9.3** is the last **1.9** cut before promoting `dev` to the next **main**; the next `main` release is planned as **v2.0** (bump all script versions accordingly when that happens).
 
-## 1.9.2.1 - bug fixes and deduplication
+### 1.9.2.1 — bug fixes and deduplication
+
 - wbIsOblivion also tested for Oblivion Remastered, making explicitly testing for it redundant.
 - wbIsOblivionR tests were previously added in a way where operator precedence could mean incorrect predicates.
 - Moved making standardized sets to its own function.
@@ -174,10 +176,11 @@ Applies to **`WryeBashTagGenerator-NG.pas`** and **`WryeBashTagGenerator-Multi-N
 - Removed unused variables.
 - Further deduplication and misc edge case fixes.
 
-## 1.9.2.0 - multifile
-- Added back multifile support, plus safeguards for independant plugin tagging.
+### 1.9.2.0 — multifile
 
-## v1.9.1.0 — bug fixes
+- Added back multifile support, plus safeguards for independent plugin tagging.
+
+### v1.9.1.0 — bug fixes
 
 - `Actors.Spells` / `Actors.SpellsForceAdd`: handler walked `Spells` on Skyrim/SSE/FO3/FNV where the SPLO array is actually named `Actor Effects`. Path is now per-game (Oblivion = `Spells`, everything else = `Actor Effects`).
 - `Actors.Spells` had no call site for FO3/FNV — added (`CREA` + `NPC_`, gated by FNV/FO3 `Use Actor Effect List` template flag).
