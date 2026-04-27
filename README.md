@@ -121,7 +121,9 @@ When the **Suggest heuristic Force* tags** checkbox is on, the script also emits
 | `NpcFacesForceFullImport` | NPC differs from master in eyes (`ENAM`), hair (`HNAM`), AND face geometry (`FaceGen Data`) simultaneously | Pure cosmetic NPC overhauls that swap all three but don't actually need full face import. |
 
 Detections route through the same logging plumbing as the standard tags, so they appear in `Show Tag to Record Relationships` output with explicit "heuristic" reasons. Review heuristic suggestions before committing them to the header.
+
 ---
+
 ## Version History
 
 ### v1.9.7 — ProcessRecord pass + aligned `ScriptVersion`
