@@ -26,11 +26,18 @@
     - adds-only                                          -> R.AddSpells    (additive merge sufficient; preserves other mods' adds)
     - identical sets                                     -> nothing
 
-  Known coverage gaps (docs/wrye-bash-tags.md items not yet implemented):
-    - C.MiscFlags flag name: uses 'Can Travel From Here'; Wrye Bash docs
-      call it 'Can't Travel From Here / Invert Fast Travel Behavior'.
-      Needs verification against the actual xEdit flag-array schema
-      before changing.
+  Known coverage gaps (see COVERAGE_GAPS.txt for full audit, severity, and
+  effort estimates):
+    - FO3/FNV Graphics dispatch is missing 17+ reference signatures
+      including ARMA, AVIF, BPTD, COBJ, CONT, EXPL, HDPT, IPCT, MSTT,
+      PERK, TACT, TERM, TXST. Root cause: the OB-shaped sGfxNamesSigs
+      base set is never overridden for FO3/FNV the way it is for Skyrim.
+      Each signature also needs a handler bucket entry in the Graphics
+      ProcessTag branch.
+    - FO3/FNV Stats dispatch is missing EYES, HAIR, HDPT (flag-compare
+      records). The Stats handler currently has no flag-comparison path
+      for those signatures, so these need new handler logic in addition
+      to dispatch.
 }
 
 
@@ -1305,6 +1312,18 @@ Begin
       If ContainsStr('CREA EFSH GRAS LSCR LTEX REGN STAT TREE', sSignature) Then
         ProcessTag('Graphics', e, o);
 
+      // OB-only Graphics dispatch for record types not covered by sGfxNamesSigs.
+      // Per Wrye Bash OB Graphics: CONT (MODL), EYES (ICON), HAIR (ICON+MODL),
+      // QUST (ICON), SKIL (ICON). Handler buckets in the Graphics ProcessTag
+      // branch are extended to match.
+      If wbIsOblivion And ContainsStr('CONT EYES HAIR QUST SKIL', sSignature) Then
+        ProcessTag('Graphics', e, o);
+
+      // FO3/FNV-only Stats dispatch for ARMA. Handler at line ~3239 already
+      // evaluates ARMA DNAM; only the dispatch was missing.
+      If (wbIsFallout3 Or wbIsFalloutNV) And (sSignature = 'ARMA') Then
+        ProcessTag('Stats', e, o);
+
       If sSignature = 'CONT' Then
         Begin
           ProcessTag('Invent.Add', e, o);
@@ -1324,6 +1343,12 @@ Begin
           If sSignature = 'SPEL' Then
             ProcessTag('SpellStats', e, o);
         End;
+
+      // FO3/FNV-only Names dispatch for record types not covered by
+      // sGfxNamesSigs (which is OB-shaped on these games). Names handler is a
+      // uniform EvaluateByPath(FULL); extension is dispatch-only.
+      If (wbIsFallout3 Or wbIsFalloutNV) And ContainsStr('AVIF COBJ MESG NOTE PERK TACT TERM', sSignature) Then
+        ProcessTag('Names', e, o);
 
       If sSignature = 'FACT' Then
         Begin
@@ -2719,18 +2744,18 @@ Begin
   Else If (g_Tag = 'Graphics') Then
          Begin
            // evaluate Icon and Model properties
-           If ContainsStr('ALCH AMMO APPA BOOK INGR KEYM LIGH MGEF MISC SGST SLGM TREE WEAP', sSignature) Then
+           If ContainsStr('ALCH AMMO APPA BOOK HAIR INGR KEYM LIGH MGEF MISC SGST SLGM TREE WEAP', sSignature) Then
              Begin
                EvaluateByPath(e, m, 'Icon');
                EvaluateByPath(e, m, 'Model');
              End
 
              // evaluate Icon properties
-           Else If ContainsStr('BSGN CLAS LSCR LTEX REGN', sSignature) Then
+           Else If ContainsStr('BSGN CLAS EYES LSCR LTEX QUST REGN SKIL', sSignature) Then
                   EvaluateByPath(e, m, 'Icon')
 
                   // evaluate Model properties
-           Else If ContainsStr('ACTI DOOR FLOR FURN GRAS STAT', sSignature) Then
+           Else If ContainsStr('ACTI CONT DOOR FLOR FURN GRAS STAT', sSignature) Then
                   EvaluateByPath(e, m, 'Model')
 
                   // evaluate ARMO properties
