@@ -48,7 +48,7 @@ Uses
 
 Const 
   ScriptName    = 'WryeBashTagGenerator-Multi-NG';
-  ScriptVersion = '1.9.7';
+  ScriptVersion = '1.9.8';
   MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
   ScriptAuthor  = 'Beermotor and Xideta';
   ScriptEmail   = 'NO SUPPORT';
