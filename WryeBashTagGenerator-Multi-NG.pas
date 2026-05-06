@@ -925,8 +925,6 @@ Begin
     ProcessTag(ATag, e, o);
 End;
 
-// ProcessRecord: keep the body line-for-line in sync with WryeBashTagGenerator-NG.pas
-// except for the Multi-only stock-master `While` walk (after `o := Master(e)`).
 
 Function ProcessRecord(e: IwbMainRecord): integer;
 
