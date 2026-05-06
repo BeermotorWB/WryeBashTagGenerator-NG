@@ -153,6 +153,23 @@ Begin
   Result := wbGameMode = gmEnderalSE;
 End;
 
+Procedure LogInfo(AText: String);
+Begin
+  AddMessage('[INFO] ' + AText);
+End;
+
+
+Procedure LogWarn(AText: String);
+Begin
+  AddMessage('[WARN] ' + AText);
+End;
+
+
+Procedure LogError(AText: String);
+Begin
+  AddMessage('[ERRO] ' + AText);
+End;
+
 
 // Path to the SPLO array on NPC_/CREA and RACE records. Oblivion calls it
 // 'Spells'; every other supported game calls it 'Actor Effects'.
@@ -176,22 +193,7 @@ Begin
 End;
 
 
-Procedure LogInfo(AText: String);
-Begin
-  AddMessage('[INFO] ' + AText);
-End;
 
-
-Procedure LogWarn(AText: String);
-Begin
-  AddMessage('[WARN] ' + AText);
-End;
-
-
-Procedure LogError(AText: String);
-Begin
-  AddMessage('[ERRO] ' + AText);
-End;
 
 
 Function TagIsRemoved(Const t: String): boolean;
@@ -1295,7 +1297,7 @@ Begin
       If wbIsOblivion And ContainsStr('CONT EYES HAIR QUST SKIL', sSignature) Then
         ProcessTag('Graphics', e, o);
 
-      // FO3/FNV-only Stats dispatch for ARMA. Handler at line ~3239 already
+      // FO3/FNV-only Stats dispatch for ARMA.
       // evaluates ARMA DNAM; only the dispatch was missing.
       If (wbIsFallout3 Or wbIsFalloutNV) And (sSignature = 'ARMA') Then
         ProcessTag('Stats', e, o);
@@ -1475,32 +1477,36 @@ Begin
     End;
 
   // ObjectBounds — per-game signature whitelist.
+    g_Tag := 'ObjectBounds';
+
   If wbIsFallout3 And ContainsStr('ACTI ADDN ALCH AMMO ARMA ARMO ASPC BOOK COBJ CONT CREA DOOR EXPL FURN GRAS IDLM INGR KEYM LIGH LVLC LVLI LVLN MISC MSTT NOTE NPC_ PROJ PWAT SCOL SOUN STAT TACT TERM TREE TXST WEAP', sSignature) Then
-    ProcessTag('ObjectBounds', e, o);
+    ProcessTag(g_Tag, e, o);
 
   If wbIsFalloutNV And ContainsStr('ACTI ADDN ALCH AMMO ARMA ARMO ASPC BOOK CCRD CHIP CMNY COBJ CONT CREA DOOR EXPL FURN GRAS IDLM IMOD INGR KEYM LIGH LVLC LVLI LVLN MISC MSTT NOTE NPC_ PROJ PWAT SCOL SOUN STAT TACT TERM TREE TXST WEAP', sSignature) Then
-    ProcessTag('ObjectBounds', e, o);
+    ProcessTag(g_Tag, e, o);
 
   If wbIsSkyrim And ContainsStr('ACTI ADDN ALCH AMMO APPA ARMO ARTO ASPC BOOK CONT DOOR DUAL ENCH EXPL FLOR FURN GRAS HAZD IDLM INGR KEYM LIGH LVLI LVLN LVSP MISC MSTT NPC_ PROJ SCRL SLGM SOUN SPEL STAT TACT TREE TXST WEAP', sSignature) Then
-    ProcessTag('ObjectBounds', e, o);
+    ProcessTag(g_Tag, e, o);
 
   If wbIsFallout4 And ContainsStr('ACTI ADDN ALCH AMMO ARMO ARTO ASPC BNDS BOOK CMPO CONT DOOR ENCH EXPL FLOR FURN GRAS HAZD IDLM INGR KEYM LIGH LVLI LVLN LVSP MISC MSTT NOTE NPC_ PKIN PROJ SCOL SOUN SPEL STAT', sSignature) Then
-    ProcessTag('ObjectBounds', e, o);
+    ProcessTag(g_Tag, e, o);
 
   // Text — per-game signature whitelist. Not applicable to FO4.
   If Not wbIsFallout4 Then
     Begin
+      g_Tag := 'Text';
+      
       If wbIsOblivion And ContainsStr('BOOK BSGN CLAS LSCR MGEF SKIL', sSignature) Then
-        ProcessTag('Text', e, o);
+        ProcessTag(g_Tag, e, o);
 
       If wbIsFallout3 And ContainsStr('AVIF BOOK CLAS LSCR MESG MGEF NOTE PERK TERM', sSignature) Then
-        ProcessTag('Text', e, o);
+        ProcessTag(g_Tag, e, o);
 
       If wbIsFalloutNV And ContainsStr('AVIF BOOK CHAL CLAS IMOD LSCR MESG MGEF NOTE PERK TERM', sSignature) Then
-        ProcessTag('Text', e, o);
+        ProcessTag(g_Tag, e, o);
 
       If wbIsSkyrim And ContainsStr('ALCH AMMO APPA ARMO AVIF BOOK CLAS LSCR MESG MGEF SCRL SHOU SPEL WEAP', sSignature) Then
-        ProcessTag('Text', e, o);
+        ProcessTag(g_Tag, e, o);
     End;
 
   // Heuristic Force* tags (opt-in; runs after all other detection so it can read TagExists state).
@@ -2125,7 +2131,7 @@ Procedure EvaluateListAdd(ARec: IInterface; AMaster: IInterface;
 Var 
   kArr, kArrM : IInterface;
   kEntry      : IInterface;
-  i           : integer;
+  i, nA, nM   : integer;
   sRef        : string;
 Begin
   If TagExists(g_Tag) Then
@@ -2164,7 +2170,7 @@ Procedure EvaluateListRemove(ARec: IInterface; AMaster: IInterface;
 Var 
   kArr, kArrM : IInterface;
   kEntry      : IInterface;
-  i           : integer;
+  i, nA, nM   : integer;
   sRef        : string;
 Begin
   If TagExists(g_Tag) Then

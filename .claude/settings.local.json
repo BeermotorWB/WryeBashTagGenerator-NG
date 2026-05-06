@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat)",
+      "Read(//tmp/**)",
+      "Bash(bash /tmp/check_dispatch.sh)"
+    ]
+  }
+}
