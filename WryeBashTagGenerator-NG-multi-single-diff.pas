@@ -1,0 +1,4004 @@
+{
+  Generates bash tags for a selected plugin automatically.
+  Tag names aligned with Wrye Bash _tag_aliases / patcher tags; FO4 parity with WB FO4 patchers.
+
+  Games:    FO3/FNV/FO4/TES4/TES4R/TES5/SSE/Enderal/EnderalSE
+  Requires: xEdit 4.1.4 or newer (script aborts on older builds)
+  Hotkey:   F12
+
+  Lineage / citation:
+    - Original WryeBashTagGenerator: fireundubh.
+    - Multifile WryeBashTagGenerator variant: Xideta.
+    - WryeBashTagGenerator-NG (this fork): Beermotor.
+
+  NO SUPPORT - provided as an example. Do NOT contact fireundubh or Xideta
+  about this fork; they did not write it and are not responsible for its
+  behavior.
+
+  Heuristic Force* tags (opt-in checkbox; off by default):
+    - Actors.SpellsForceAdd       : override Spells is a strict superset of master Spells AND Actors.Spells already suggested.
+    - Actors.AIPackagesForceAdd   : override Packages is a strict superset of master Packages AND Actors.AIPackages already suggested.
+    - NpcFacesForceFullImport     : NPC differs from master in eyes (ENAM), hair (HNAM), AND face geometry simultaneously.
+  These heuristics may produce false positives on plugins that intentionally only add entries; review before committing.
+
+  Oblivion RACE Spells split (replaces v1.0 single-tag emission):
+    - removes present (master has SPEL not in override)  -> R.ChangeSpells (full override required to apply removal)
+    - adds-only                                          -> R.AddSpells    (additive merge sufficient; preserves other mods' adds)
+    - identical sets                                     -> nothing
+
+  Known coverage gaps (see COVERAGE_GAPS.txt for full audit, severity, and
+  effort estimates):
+    - FO3/FNV Graphics dispatch is missing 17+ reference signatures
+      including ARMA, AVIF, BPTD, COBJ, CONT, EXPL, HDPT, IPCT, MSTT,
+      PERK, TACT, TERM, TXST. Root cause: the OB-shaped sGfxNamesSigs
+      base set is never overridden for FO3/FNV the way it is for Skyrim.
+      Each signature also needs a handler bucket entry in the Graphics
+      ProcessTag branch.
+    - FO3/FNV Stats dispatch is missing EYES, HAIR, HDPT (flag-compare
+      records). The Stats handler currently has no flag-comparison path
+      for those signatures, so these need new handler logic in addition
+      to dispatch.
+}
+
+{#IF MULTI}
+Unit WryeBashTagGeneratorMultiNG;
+{#ELSEIF DEBUG}
+Unit WryeBashTagGeneratorNGDebug;
+{#ELSEIF SINGLE}
+Unit WryeBashTagGeneratorNG;
+{#ENDIF}
+
+
+Uses 
+  Dialogs;
+
+Const 
+{#IF MULTI}
+  ScriptName    = 'WryeBashTagGenerator-Multi-NG';
+{#ELSEIF DEBUG}
+  ScriptName    = 'WryeBashTagGenerator-NG-debug';
+{#ELSEIF SINGLE}
+  ScriptName    = 'WryeBashTagGenerator-NG';
+{#ENDIF}
+{#IF NOT DEBUG}
+  ScriptVersion = '1.9.8';
+{#ELSE}
+  ScriptVersion = '1.9.8-debug';
+
+{#ENDIF}
+  MinXEditVer   = $04010400; // 4.1.4 (native StringList set ops + assumed API surface)
+  ScriptAuthor  = 'Beermotor and Xideta';
+  ScriptEmail   = 'NO SUPPORT';
+  ScaleFactor   = Screen.PixelsPerInch / 96;
+
+
+Var 
+  slBadTags        : TStringList;
+  slDifferentTags  : TStringList;
+  slExistingTags   : TStringList;
+  slLog               : TStringList;
+  slTagRelationships  : TStringList;
+  slSuggestedTags     : TStringList;
+  slDeprecatedTags : TStringList;
+
+  // BashTags file (Data\BashTags\<plugin>.txt) read state
+  slBashTagsFileAdds    : TStringList;
+  slBashTagsFileRemoves : TStringList;
+  slBashTagsFileLines   : TStringList;
+  g_BashTagsFilePath    : string;
+  g_BashTagsFileExists  : boolean;
+
+  // User-requested run abort (set via the header/BashTags discrepancy dialog)
+  g_AbortRun       : boolean;
+
+  g_FileName       : string;
+  g_Tag            : string;
+  g_AddTags        : boolean;
+  g_AddFile        : boolean;
+  g_LogTests              : boolean;
+  g_ShowTagRelationships  : boolean;
+  g_HeuristicForceTags    : boolean;
+
+{#IF SINGLE,DEBUG}
+  // Single-plugin enforcement: lock onto the first file we see. If multiple
+  // plugins are selected in xEdit, the first is processed and the run exits
+  // with an error in Finalize.
+  g_TargetFile     : IwbFile;
+  g_TargetFileName : string;
+  g_MultiFileError : boolean;
+  g_OtherFiles     : TStringList;
+{#ELSEIF MULTI}
+// True iff AFileName is a stock “base game” master file for the current game.
+// Multi mode compares each plugin against stock masters only, to avoid treating
+// other selected mods as context (this is a batch convenience tool, not a load
+// order reconciliation pass).
+Function IsStockMasterFile(Const AFileName: string): boolean;
+Begin
+  Result := False;
+
+  // TES5 / SSE / Enderal
+  If wbIsSkyrim Then
+    Begin
+      Result :=
+        SameText(AFileName, 'Skyrim.esm')
+        Or SameText(AFileName, 'Update.esm')
+        Or SameText(AFileName, 'Dawnguard.esm')
+        Or SameText(AFileName, 'HearthFires.esm')
+        Or SameText(AFileName, 'Dragonborn.esm');
+      Exit;
+    End;
+
+  // TES4 / TES4R
+  If wbIsOblivion Then
+    Begin
+      Result := SameText(AFileName, 'Oblivion.esm');
+      Exit;
+    End;
+
+  // FO3 / FNV
+  If wbIsFallout3 Then
+    Begin
+      Result := SameText(AFileName, 'Fallout3.esm');
+      Exit;
+    End;
+  If wbIsFalloutNV Then
+    Begin
+      Result := SameText(AFileName, 'FalloutNV.esm');
+      Exit;
+    End;
+
+  // FO4
+  If wbIsFallout4 Then
+    Begin
+      Result :=
+        SameText(AFileName, 'Fallout4.esm')
+        Or SameText(AFileName, 'DLCRobot.esm')
+        Or SameText(AFileName, 'DLCworkshop01.esm')
+        Or SameText(AFileName, 'DLCCoast.esm')
+        Or SameText(AFileName, 'DLCworkshop02.esm')
+        Or SameText(AFileName, 'DLCworkshop03.esm')
+        Or SameText(AFileName, 'DLCNukaWorld.esm');
+      Exit;
+    End;
+End;
+{#ENDIF}
+
+// Oblivion (vanilla and Remastered). Detection logic treats both identically,
+// so this is the predicate to use anywhere Oblivion-specific behavior applies.
+// Use wbIsOblivionR only when a branch needs to distinguish Remastered from
+// vanilla (currently only the game-mode log line in Initialize).
+Function wbIsOblivion: boolean;
+Begin
+  Result := (wbGameMode = gmTES4) or (wbGameMode = gmTES4R);
+End;
+
+
+Function wbIsOblivionR: boolean;
+Begin
+  Result := wbGameMode = gmTES4R;
+End;
+
+
+Function wbIsSkyrim: boolean;
+Begin
+  Result := (wbGameMode = gmTES5) Or (wbGameMode = gmEnderal) Or (wbGameMode = gmSSE) Or (wbGameMode = gmTES5VR) Or (wbGameMode = gmEnderalSE);
+End;
+
+
+Function wbIsSkyrimSE: boolean;
+Begin
+  Result := (wbGameMode = gmSSE) Or (wbGameMode = gmTES5VR) Or (wbGameMode = gmEnderalSE);
+End;
+
+
+Function wbIsFallout3: boolean;
+Begin
+  Result := wbGameMode = gmFO3;
+End;
+
+
+Function wbIsFalloutNV: boolean;
+Begin
+  Result := wbGameMode = gmFNV;
+End;
+
+
+Function wbIsFallout4: boolean;
+Begin
+  Result := (wbGameMode = gmFO4) Or (wbGameMode = gmFO4VR);
+End;
+
+
+Function wbIsFallout76: boolean;
+Begin
+  Result := wbGameMode = gmFO76;
+End;
+
+
+Function wbIsEnderal: boolean;
+Begin
+  Result := wbGameMode = gmEnderal;
+End;
+
+
+Function wbIsEnderalSE: boolean;
+Begin
+  Result := wbGameMode = gmEnderalSE;
+End;
+
+
+// Path to the SPLO array on NPC_/CREA and RACE records. Oblivion calls it
+// 'Spells'; every other supported game calls it 'Actor Effects'.
+Function ActorSpellArrayPath: string;
+Begin
+  If wbIsOblivion Then
+    Result := 'Spells'
+  Else
+    Result := 'Actor Effects';
+End;
+
+// Create a pre-configured TStringList suitable for tag-set operations:
+// sorted, case-insensitive, duplicates ignored. Used for the many short-lived
+// set-style lists this script builds (normalized tag sets, diffs, FormID sets).
+Function MakeTagSet: TStringList;
+Begin
+  Result := TStringList.Create;
+  Result.Sorted        := True;
+  Result.Duplicates    := dupIgnore;
+  Result.CaseSensitive := False;
+End;
+
+
+Procedure LogInfo(AText: String);
+Begin
+  AddMessage('[INFO] ' + AText);
+End;
+
+
+Procedure LogWarn(AText: String);
+Begin
+  AddMessage('[WARN] ' + AText);
+End;
+
+
+Procedure LogError(AText: String);
+Begin
+  AddMessage('[ERRO] ' + AText);
+End;
+
+
+Function TagIsRemoved(Const t: String): boolean;
+Begin
+  Result := SameText(t, 'Merge') Or SameText(t, 'ScriptContents');
+End;
+
+
+Procedure ExpandOneAliasTo(Const t: String; dest: TStringList);
+
+Var 
+  s : string;
+Begin
+  s := Trim(t);
+  If s = '' Then
+    Exit;
+  If TagIsRemoved(s) Then
+    Exit;
+
+  If SameText(s, 'Actors.Perks.Add') Then
+    dest.Add('NPC.Perks.Add')
+  Else If SameText(s, 'Actors.Perks.Change') Then
+         dest.Add('NPC.Perks.Change')
+  Else If SameText(s, 'Actors.Perks.Remove') Then
+         dest.Add('NPC.Perks.Remove')
+  Else If SameText(s, 'Body-F') Then
+         dest.Add('R.Body-F')
+  Else If SameText(s, 'Body-M') Then
+         dest.Add('R.Body-M')
+  Else If SameText(s, 'Body-Size-F') Then
+         dest.Add('R.Body-Size-F')
+  Else If SameText(s, 'Body-Size-M') Then
+         dest.Add('R.Body-Size-M')
+  Else If SameText(s, 'C.GridFlags') Then
+         dest.Add('C.ForceHideLand')
+  Else If SameText(s, 'Derel') Then
+         dest.Add('Relations.Remove')
+  Else If SameText(s, 'Eyes') Or SameText(s, 'Eyes-D') Or SameText(s, 'Eyes-E') Or SameText(s, 'Eyes-R') Then
+         dest.Add('R.Eyes')
+  Else If SameText(s, 'Factions') Then
+         dest.Add('Actors.Factions')
+  Else If SameText(s, 'Hair') Then
+         dest.Add('R.Hair')
+  Else If SameText(s, 'Invent') Then
+         Begin
+           dest.Add('Invent.Add');
+           dest.Add('Invent.Remove');
+         End
+  Else If SameText(s, 'InventOnly') Then
+         Begin
+           dest.Add('IIM');
+           dest.Add('Invent.Add');
+           dest.Add('Invent.Remove');
+         End
+  Else If SameText(s, 'Npc.EyesOnly') Then
+         dest.Add('NPC.Eyes')
+  Else If SameText(s, 'Npc.HairOnly') Then
+         dest.Add('NPC.Hair')
+  Else If SameText(s, 'NpcFaces') Then
+         Begin
+           dest.Add('NPC.Eyes');
+           dest.Add('NPC.Hair');
+           dest.Add('NPC.FaceGen');
+         End
+  Else If SameText(s, 'R.Relations') Then
+         Begin
+           dest.Add('R.Relations.Add');
+           dest.Add('R.Relations.Change');
+           dest.Add('R.Relations.Remove');
+         End
+  Else If SameText(s, 'Relations') Then
+         Begin
+           dest.Add('Relations.Add');
+           dest.Add('Relations.Change');
+         End
+  Else If SameText(s, 'Voice-F') Then
+         dest.Add('R.Voice-F')
+  Else If SameText(s, 'Voice-M') Then
+         dest.Add('R.Voice-M')
+  Else
+    dest.Add(s);
+End;
+
+
+Procedure NormalizeBashTagsInPlace(sl: TStringList);
+
+Var 
+  tmp : TStringList;
+  i   : integer;
+Begin
+  tmp := MakeTagSet;
+  Try
+    For i := 0 To Pred(sl.Count) Do
+      ExpandOneAliasTo(sl[i], tmp);
+    sl.Clear;
+    sl.AddStrings(tmp);
+  Finally
+    tmp.Free;
+  End;
+End;
+
+
+Function TagsCommaTextEqual(slA: TStringList; slB: TStringList): boolean;
+
+Var 
+  tA : TStringList;
+  tB : TStringList;
+Begin
+  tA := MakeTagSet;
+  tB := MakeTagSet;
+  Try
+    tA.AddStrings(slA);
+    tB.AddStrings(slB);
+    Result := SameText(tA.CommaText, tB.CommaText);
+  Finally
+    tA.Free;
+    tB.Free;
+  End;
+End;
+
+
+Function PromptDeprecatedHeaderUpdate: boolean;
+Begin
+  Result := MessageDlg(
+    'This plugin description contains deprecated Bash Tags (obsolete names Wrye Bash no longer uses).'#13#10 +
+    'Update the {{BASH:...}} block to modern tag names when writing the header?',
+    mtConfirmation, [mbYes, mbNo], 0) = mrYes;
+End;
+
+
+// Reads Data\BashTags\<plugin>.txt (Wrye Bash format) into:
+//   slBashTagsFileAdds    - bare tags (canonical, normalized)
+//   slBashTagsFileRemoves - tag names that were prefixed with '-' in the file
+//   slBashTagsFileLines   - raw original lines, preserved for in-place backup
+// '#' starts a comment to end of line; tags are comma-separated and may span lines.
+Procedure ReadBashTagsFile(Const APath: string);
+
+Var 
+  i, k     : integer;
+  iHash    : integer;
+  sLine    : string;
+  sEntry   : string;
+  slParts  : TStringList;
+Begin
+  slBashTagsFileAdds.Clear;
+  slBashTagsFileRemoves.Clear;
+  slBashTagsFileLines.Clear;
+  g_BashTagsFileExists := FileExists(APath);
+  If Not g_BashTagsFileExists Then Exit;
+
+  slBashTagsFileLines.LoadFromFile(APath);
+
+  slParts := TStringList.Create;
+  Try
+    slParts.StrictDelimiter := True;
+    slParts.Delimiter       := ',';
+    For i := 0 To Pred(slBashTagsFileLines.Count) Do
+      Begin
+        sLine := slBashTagsFileLines[i];
+        iHash := Pos('#', sLine);
+        If iHash > 0 Then
+          sLine := Copy(sLine, 1, iHash - 1);
+        sLine := Trim(sLine);
+        If sLine = '' Then Continue;
+        slParts.DelimitedText := sLine;
+        For k := 0 To Pred(slParts.Count) Do
+          Begin
+            sEntry := Trim(slParts[k]);
+            If sEntry = '' Then Continue;
+            If sEntry[1] = '-' Then
+              slBashTagsFileRemoves.Add(Trim(Copy(sEntry, 2, Length(sEntry) - 1)))
+            Else
+              slBashTagsFileAdds.Add(sEntry);
+          End;
+      End;
+  Finally
+    slParts.Free;
+  End;
+
+  NormalizeBashTagsInPlace(slBashTagsFileAdds);
+  NormalizeBashTagsInPlace(slBashTagsFileRemoves);
+End;
+
+
+// Writes APath as a Wrye-Bash-readable BashTags file:
+//   - '# Generated by ScriptName vScriptVersion'
+//   - if ABackup and AOriginalLines is non-empty, the original contents are
+//     preserved as commented lines wrapped in begin/end markers
+//   - one comma-separated tag line containing ANewLine
+Procedure WriteBashTagsFileWithBackup(Const APath: string;
+                                      Const ANewLine: string;
+                                      Const AOriginalLines: TStringList;
+                                      ABackup: boolean);
+
+Var 
+  slOut : TStringList;
+  i     : integer;
+Begin
+  ForceDirectories(ExtractFilePath(APath));
+  slOut := TStringList.Create;
+  Try
+    slOut.Add('# Generated by ' + ScriptName + ' v' + ScriptVersion);
+    If ABackup And (AOriginalLines.Count > 0) Then
+      Begin
+        slOut.Add('# --- Backup of previous file contents (' + DateTimeToStr(Now) + ') ---');
+        For i := 0 To Pred(AOriginalLines.Count) Do
+          slOut.Add('# ' + AOriginalLines[i]);
+        slOut.Add('# --- End backup ---');
+      End;
+    slOut.Add(ANewLine);
+    slOut.SaveToFile(APath);
+  Finally
+    slOut.Free;
+  End;
+End;
+
+
+// True iff the normalized tag set in the {{BASH:...}} header block differs
+// from the additive set in the existing BashTags file.
+Function HeaderBashTagsDiffer: boolean;
+
+Var 
+  slA : TStringList;
+  slB : TStringList;
+Begin
+  slA := MakeTagSet;
+  slB := MakeTagSet;
+  Try
+    slA.AddStrings(slExistingTags);
+    slB.AddStrings(slBashTagsFileAdds);
+    NormalizeBashTagsInPlace(slA);
+    NormalizeBashTagsInPlace(slB);
+    Result := Not TagsCommaTextEqual(slA, slB);
+  Finally
+    slA.Free;
+    slB.Free;
+  End;
+End;
+
+
+// Show the header/BashTags discrepancy warning with Skip/Abort buttons.
+// Returns True if the user chose Abort (halt the entire run);
+// returns False if the user chose Ignore (skip writes for this plugin, continue).
+// Writes are suppressed for the current plugin either way — the result only
+// decides whether subsequent plugins are processed.
+Function NotifyHeaderBashTagsDiscrepancy: boolean;
+
+Var
+  iResult : integer;
+Begin
+{#IF SINGLE}
+  iResult := MessageDlg(
+    'The {{BASH:...}} block in the plugin header and the existing BashTags '
+    + 'file disagree on tags for plugin:'#13#10
+    + '    ' + g_FileName + #13#10#13#10
+    + 'This script does not reconcile the two; please fix the discrepancy '
+    + 'manually.'#13#10#13#10
+    + 'Ignore = skip writes for this plugin, continue with the next.'#13#10
+    + 'Abort  = halt the run; no further plugins will be processed.',
+    mtWarning, [mbIgnore, mbAbort], 0);
+  Result := (iResult = mrAbort);
+{#ELSEIF MULTI}
+  // Multi mode: always ignore discrepancy and continue (matching the older
+  // multifile behavior). Still warn loudly so the user can correct it.
+  LogWarn('Header/BashTags discrepancy detected; skipping writes for this plugin and continuing.');
+  Result := False;
+{#ENDIF}
+End;
+
+
+Function PromptApproveBashTagsBackup: boolean;
+Begin
+  Result := MessageDlg(
+    'About to back up the existing BashTags file in-place (the original lines will '
+    + 'be commented out at the top of the file) and overwrite it with the new tag '
+    + 'list:'#13#10 + g_BashTagsFilePath + #13#10#13#10
+    + 'Approve?  (No = discard the change, leave the existing file intact, terminate normally.)',
+    mtConfirmation, [mbYes, mbNo], 0) = mrYes;
+End;
+
+
+Function Initialize: integer;
+Begin
+  ClearMessages();
+
+  LogInfo('--------------------------------------------------------------------------------');
+  LogInfo(ScriptName + ' v' + ScriptVersion + ' by ' + ScriptAuthor + ' <' + ScriptEmail + '>');
+  LogInfo('--------------------------------------------------------------------------------');
+  LogInfo(DataPath);
+
+
+  g_AddTags  := False;
+  g_AddFile  := False;
+{#IF SINGLE,DEBUG}
+  g_LogTests             := True;
+  g_ShowTagRelationships := True;
+{#ELSEIF MULTI}
+  // Multi defaults: keep log size down; deep logging belongs in -debug.
+  g_LogTests             := False;
+  g_ShowTagRelationships := False;
+{#ENDIF}
+
+  g_HeuristicForceTags   := False;
+
+  slLog := TStringList.Create;
+  slLog.Sorted     := False;
+  slLog.Duplicates := dupAccept;
+
+  slTagRelationships := TStringList.Create;
+  slTagRelationships.Sorted     := False;
+  slTagRelationships.Duplicates := dupAccept;
+
+  slSuggestedTags := MakeTagSet;
+  slSuggestedTags.Delimiter := ',';
+
+  slExistingTags := TStringList.Create;
+  slExistingTags.CaseSensitive := False;
+
+  slDifferentTags := MakeTagSet;
+
+  slBadTags := TStringList.Create;
+
+  slDeprecatedTags := MakeTagSet;
+  { Mirror Mopy/bash/bosh/__init__.py _removed_tags keys + _tag_aliases keys }
+  slDeprecatedTags.CommaText :=
+    'Actors.Perks.Add,Actors.Perks.Change,Actors.Perks.Remove,Body-F,Body-M,Body-Size-F,Body-Size-M,C.GridFlags,Derel,Eyes,Eyes-D,Eyes-E,Eyes-R,Factions,Hair,Invent,InventOnly,Merge,Npc.EyesOnly,Npc.HairOnly,NpcFaces,R.Relations,Relations,ScriptContents,Voice-F,Voice-M';
+
+  // BashTags file read state
+  slBashTagsFileAdds    := MakeTagSet;
+  slBashTagsFileRemoves := MakeTagSet;
+
+  slBashTagsFileLines := TStringList.Create;
+  slBashTagsFileLines.Sorted     := False;
+  slBashTagsFileLines.Duplicates := dupAccept;
+
+  g_BashTagsFilePath   := '';
+  g_BashTagsFileExists := False;
+
+  g_AbortRun := False;
+
+{#IF SINGLE,DEBUG}
+  // Single-plugin lock
+  g_TargetFile     := Nil;
+  g_TargetFileName := '';
+  g_MultiFileError := False;
+  g_OtherFiles     := TStringList.Create;
+  g_OtherFiles.Sorted        := True;
+  g_OtherFiles.Duplicates    := dupIgnore;
+  g_OtherFiles.CaseSensitive := False;
+{#ELSEIF MULTI}
+  // No single-plugin lock in Multi mode.
+{#ENDIF}
+
+  If wbVersionNumber < MinXEditVer Then
+    Begin
+      LogWarn(Format('This script requires xEdit 4.1.4 or newer. Detected wbVersionNumber = $%s.',
+                     [IntToHex(wbVersionNumber, 8)]));
+      LogError('Cannot proceed because xEdit version is older than 4.1.4.');
+      Result := 4;
+      Exit;
+    End;
+
+  If ShowPrompt(ScriptName + ' v' + ScriptVersion) = mrAbort Then
+    Begin
+      LogError('Cannot proceed because user aborted execution');
+      Result := 1;
+      Exit;
+    End;
+
+  If wbIsFallout76 Then
+    Begin
+      LogError('Cannot proceed because CBash does not support Fallout 76');
+      Result := 2;
+      Exit;
+    End;
+
+  If wbIsFallout3 Then
+    LogInfo('Using game mode: Fallout 3')
+  Else If wbIsFalloutNV Then
+         LogInfo('Using game mode: Fallout: New Vegas')
+  Else If wbIsFallout4 Then
+         LogInfo('Using game mode: Fallout 4')
+  // wbIsOblivionR is more specific than wbIsOblivion (which also returns True
+  // for TES4R), so it must be tested first or the Remastered branch is dead.
+  Else If wbIsOblivionR Then
+         LogInfo('Using game mode: Oblivion Remastered')
+  Else If wbIsOblivion Then
+         LogInfo('Using game mode: Oblivion')
+  Else If wbIsEnderal Then
+         LogInfo('Using game mode: Enderal')
+  Else If wbIsEnderalSE Then
+         LogInfo('Using game mode: Enderal Special Edition')
+  Else If wbIsSkyrimSE Then
+         LogInfo('Using game mode: Skyrim Special Edition')
+  Else If wbIsSkyrim Then
+         LogInfo('Using game mode: Skyrim')
+  Else
+    Begin
+      LogError('Cannot proceed because script does not support game mode');
+      Result := 3;
+      Exit;
+    End;
+
+  ScriptProcessElements := [etFile];
+End;
+
+
+Function Process(input: IInterface): integer;
+
+Var 
+  kDescription : IwbElement;
+  kHeader      : IwbElement;
+  sDescription : string;
+  sTags        : string;
+  i            : integer;
+  f            : IwbFile;
+  slFinalTags   : TStringList;
+  slNormExist   : TStringList;
+  slWriteDelta  : TStringList;
+  slDepFound    : TStringList;
+  bWriteHeader : boolean;
+  bHasWork     : boolean;
+  bDoFileWrite : boolean;
+Begin
+
+  If (ElementType(input) = etMainRecord) Then
+    exit;
+
+  // Honour prior user-requested abort: once the discrepancy dialog sets
+  // g_AbortRun, every remaining per-file Process invocation returns immediately.
+  If g_AbortRun Then
+    Exit;
+
+      f := GetFile(input);
+{#IF SINGLE,DEBUG}
+  // Single-plugin enforcement: lock onto the first file we see.
+  // Any additional distinct file flips an error flag; Finalize then aborts the run.
+  If Not Assigned(g_TargetFile) Then
+    Begin
+      g_TargetFile     := f;
+      g_TargetFileName := GetFileName(f);
+    End
+  Else If Not SameText(GetFileName(f), g_TargetFileName) Then
+    Begin
+      g_MultiFileError := True;
+      If g_OtherFiles.IndexOf(GetFileName(f)) = -1 Then
+        g_OtherFiles.Add(GetFileName(f));
+      Exit;
+    End;
+{#ENDIF}
+  g_FileName := GetFileName(f);
+
+  // Start-of-Process state reset. Each selected plugin is tagged independently;
+  // pre-clearing here guarantees no leakage from a prior plugin even if that
+  // plugin's Process exited early (exception, discrepancy skip, etc.) before the
+  // end-of-Process clears ran.
+  slLog.Clear;
+  slTagRelationships.Clear;
+  slSuggestedTags.Clear;
+  slExistingTags.Clear;
+  slDifferentTags.Clear;
+  slBadTags.Clear;
+  slBashTagsFileAdds.Clear;
+  slBashTagsFileRemoves.Clear;
+  slBashTagsFileLines.Clear;
+  g_BashTagsFilePath   := '';
+  g_BashTagsFileExists := False;
+
+  AddMessage(#10);
+  LogInfo('=== ' + g_FileName + ' ===');
+
+  LogInfo('Processing... ' + IntToStr(RecordCount(f)) + ' records. Please wait. This could take a while.');
+
+  For i := 0 To Pred(RecordCount(f)) Do
+    ProcessRecord(RecordByIndex(f, i));
+
+  LogInfo('--------------------------------------------------------------------------------');
+  LogInfo(g_FileName);
+  LogInfo('-------------------------------------------------------------------------- TESTS');
+
+  If g_LogTests Then
+    For i := 0 To Pred(slLog.Count) Do
+      LogInfo(slLog[i]);
+
+  LogInfo('------------------------------------------------------------------------ RESULTS');
+
+  slFinalTags  := MakeTagSet;
+  slNormExist  := MakeTagSet;
+  slWriteDelta := MakeTagSet;
+  slDepFound   := TStringList.Create;
+  Try
+    kHeader := ElementBySignature(f, 'TES4');
+    kDescription := ElementBySignature(kHeader, 'SNAM');
+    If Assigned(kDescription) Then
+      sDescription := GetEditValue(kDescription)
+    Else
+      sDescription := '';
+
+    slExistingTags.Clear;
+    slExistingTags.CommaText := RegExMatchGroup('{{BASH:(.*?)}}', sDescription, 1);
+
+    g_BashTagsFilePath := DataPath + 'BashTags\' + ChangeFileExt(g_FileName, '.txt');
+    ReadBashTagsFile(g_BashTagsFilePath);
+
+    slDepFound.Clear;
+    StringListIntersection(slExistingTags, slDeprecatedTags, slDepFound);
+    LogInfo(FormatTags(slDepFound, 'deprecated tag found:', 'deprecated tags found:', 'No deprecated tags found.'));
+
+    slFinalTags.Clear;
+    slFinalTags.AddStrings(slExistingTags);
+    slFinalTags.AddStrings(slSuggestedTags);
+    NormalizeBashTagsInPlace(slFinalTags);
+
+    slNormExist.Clear;
+    slNormExist.AddStrings(slExistingTags);
+    NormalizeBashTagsInPlace(slNormExist);
+
+    bHasWork := (slSuggestedTags.Count > 0) Or (slDepFound.Count > 0) Or g_AddFile;
+
+    If Not bHasWork Then
+      LogInfo('No tags are suggested for this plugin.')
+    Else
+      Begin
+        bWriteHeader := g_AddTags;
+        If bWriteHeader And (slDepFound.Count > 0) Then
+          If Not PromptDeprecatedHeaderUpdate Then
+            Begin
+              bWriteHeader := False;
+              LogWarn('Deprecated Bash Tags present; user declined header update — description not modified.');
+            End;
+
+        slDifferentTags.Clear;
+        StringListDifference(slSuggestedTags, slExistingTags, slDifferentTags);
+        slBadTags.Clear;
+        StringListDifference(slExistingTags, slSuggestedTags, slBadTags);
+
+        // Deprecated tags are reported separately under "deprecated tags found:";
+        // they are not "bad" (the user just hasn't migrated yet), so strip them out.
+        If slDepFound.Count > 0 Then
+          For i := Pred(slBadTags.Count) DownTo 0 Do
+            If slDepFound.IndexOf(slBadTags[i]) <> -1 Then
+              slBadTags.Delete(i);
+
+        If (slSuggestedTags.Count = 0) And (slDepFound.Count = 0) And TagsCommaTextEqual(slFinalTags, slNormExist) And Not g_AddFile Then
+          Begin
+            LogInfo(FormatTags(slExistingTags,
+              'existing tag found in header:',
+              'existing tags found in header:',
+              'No existing tags found in header.'));
+            If g_BashTagsFileExists Then
+              Begin
+                LogInfo(FormatTags(slBashTagsFileAdds,
+                  'existing tag found in BashTags file:',
+                  'existing tags found in BashTags file:',
+                  'No existing tags found in BashTags file.'));
+                If slBashTagsFileRemoves.Count > 0 Then
+                  LogInfo(FormatTags(slBashTagsFileRemoves,
+                    'tag explicitly removed (-) in BashTags file:',
+                    'tags explicitly removed (-) in BashTags file:',
+                    ''));
+              End
+            Else
+              LogInfo('No BashTags file found at: ' + g_BashTagsFilePath);
+            LogInfo(FormatTags(slSuggestedTags, 'suggested tag:', 'suggested tags:', 'No suggested tags.'));
+            LogWarn('No tags to add.' + #13#10);
+          End
+        Else
+          Begin
+            // Resolve BashTags-file prompts BEFORE the header write so the
+            // discrepancy "No" path can also suppress the header rewrite.
+            bDoFileWrite := False;
+            If g_AddFile Then
+              Begin
+                bDoFileWrite := True;
+                If g_BashTagsFileExists Then
+                  Begin
+                    If TagsCommaTextEqual(slFinalTags, slBashTagsFileAdds) Then
+                      Begin
+                        LogInfo('BashTags file already up to date; no changes to write.');
+                        bDoFileWrite := False;
+                      End
+                    Else If HeaderBashTagsDiffer Then
+                      Begin
+{#IF SINGLE,DEBUG}
+                        If NotifyHeaderBashTagsDiscrepancy Then
+                          Begin
+                            g_AbortRun := True;
+                            LogWarn('Header/BashTags discrepancy detected; user aborted run. No further plugins will be processed.');
+                          End
+                        Else
+                          LogWarn('Header/BashTags discrepancy detected; skipping writes for this plugin. Continuing with remaining plugins.');
+{#ELSEIF MULTI}
+                        // Multi mode: always ignore discrepancy and continue.
+                        NotifyHeaderBashTagsDiscrepancy;
+{#ENDIF}
+                        bDoFileWrite := False;
+                        bWriteHeader := False;
+                      End
+                    Else If Not PromptApproveBashTagsBackup Then
+                      Begin
+                        LogInfo('User discarded BashTags update; existing file left intact.');
+                        bDoFileWrite := False;
+                      End;
+                  End;
+              End;
+
+            If bWriteHeader Then
+              Begin
+                kDescription := ElementBySignature(kHeader, 'SNAM');
+                If Not Assigned(kDescription) Then
+                  kDescription := Add(kHeader, 'SNAM', True);
+
+                sDescription := GetEditValue(kDescription);
+                sTags        := Format('{{BASH:%s}}', [slFinalTags.DelimitedText]);
+
+                If (Length(sDescription) = 0) And (slFinalTags.Count > 0) Then
+                  sDescription := sTags
+                Else If (Not TagsCommaTextEqual(slFinalTags, slNormExist)) Or (slDepFound.Count > 0) Then
+                       Begin
+                         If slExistingTags.Count = 0 Then
+                           sDescription := sDescription + #10#10 + sTags
+                         Else
+                           sDescription := RegExReplace('{{BASH:.*?}}', sTags, sDescription);
+                       End;
+
+                SetEditValue(kDescription, sDescription);
+
+                LogInfo(FormatTags(slBadTags,       'bad tag removed:',          'bad tags removed:',          'No bad tags found.'));
+                LogInfo(FormatTags(slDifferentTags, 'tag added to file header:', 'tags added to file header:', 'No tags added.'));
+              End
+            Else
+              Begin
+                LogInfo(FormatTags(slBadTags,       'bad tag found:',         'bad tags found:',         'No bad tags found.'));
+                LogInfo(FormatTags(slDifferentTags, 'suggested tag to add:',  'suggested tags to add:',  'No suggested tags to add.'));
+              End;
+
+            LogInfo(FormatTags(slExistingTags,
+              'existing tag found in header:',
+              'existing tags found in header:',
+              'No existing tags found in header.'));
+            If g_BashTagsFileExists Then
+              Begin
+                LogInfo(FormatTags(slBashTagsFileAdds,
+                  'existing tag found in BashTags file:',
+                  'existing tags found in BashTags file:',
+                  'No existing tags found in BashTags file.'));
+                If slBashTagsFileRemoves.Count > 0 Then
+                  LogInfo(FormatTags(slBashTagsFileRemoves,
+                    'tag explicitly removed (-) in BashTags file:',
+                    'tags explicitly removed (-) in BashTags file:',
+                    ''));
+              End
+            Else
+              LogInfo('No BashTags file found at: ' + g_BashTagsFilePath);
+            LogInfo(FormatTags(slFinalTags, 'suggested tag overall:', 'suggested tags overall:', 'No suggested tags overall.'));
+
+            // Net-new and removed vs header / vs BashTags file. Use FormatTags so xEdit
+            // Messages renders the {{BASH:...}} block the same way as other RESULTS lines.
+
+            // Header adds: skip when delta == full final set (redundant — header was
+            // empty, or only contained tokens that normalize away). Still log the
+            // "No new tags..." message when delta is empty but final set is non-empty.
+            slWriteDelta.Clear;
+            StringListDifference(slFinalTags, slNormExist, slWriteDelta);
+            If slWriteDelta.Count <> slFinalTags.Count Then
+              LogInfo(FormatTags(slWriteDelta,
+                'new tag to be added to header:',
+                'new tags to be added to header:',
+                'No new tags to add to header.'));
+
+            // Header removals: literal tokens currently in {{BASH:...}} that will
+            // not be present after rewrite (alias rename, TagIsRemoved drop, etc.).
+            slWriteDelta.Clear;
+            StringListDifference(slExistingTags, slFinalTags, slWriteDelta);
+            LogInfo(FormatTags(slWriteDelta,
+              'tag to be removed from header:',
+              'tags to be removed from header:',
+              'No tags to be removed from header.'));
+
+            If g_BashTagsFileExists Then
+              Begin
+                // BashTags file adds.
+                slWriteDelta.Clear;
+                StringListDifference(slFinalTags, slBashTagsFileAdds, slWriteDelta);
+                LogInfo(FormatTags(slWriteDelta,
+                  'new tag to be added to BashTags file:',
+                  'new tags to be added to BashTags file:',
+                  'No new tags to add to BashTags file.'));
+
+                // BashTags file removals: existing additive tags that vanish on overwrite.
+                slWriteDelta.Clear;
+                StringListDifference(slBashTagsFileAdds, slFinalTags, slWriteDelta);
+                LogInfo(FormatTags(slWriteDelta,
+                  'tag to be removed from BashTags file:',
+                  'tags to be removed from BashTags file:',
+                  'No tags to be removed from BashTags file.'));
+              End;
+
+            If g_ShowTagRelationships Then
+              For i := 0 To Pred(slTagRelationships.Count) Do
+                LogInfo(slTagRelationships[i]);
+
+            If bDoFileWrite Then
+              Begin
+                WriteBashTagsFileWithBackup(g_BashTagsFilePath,
+                                            slFinalTags.DelimitedText,
+                                            slBashTagsFileLines,
+                                            g_BashTagsFileExists);
+                LogInfo('Finished writing bash tags to BashTags file (canonical names).');
+              End;
+          End;
+      End;
+
+  Finally
+    slFinalTags.Free;
+    slNormExist.Free;
+    slWriteDelta.Free;
+    slDepFound.Free;
+  End;
+
+  slLog.Clear;
+  slTagRelationships.Clear;
+  slSuggestedTags.Clear;
+  slExistingTags.Clear;
+  slDifferentTags.Clear;
+  slBadTags.Clear;
+
+  AddMessage(#10);
+End;
+
+
+// Gate ProcessTag on the template flag named AFlagName under 'ACBS\Template Flags'.
+// If the flag is set on either side (master or override), the NPC/CREA inherits
+// that subrecord from its template and overriding it would be a no-op, so we
+// skip. Otherwise emit the tag. Mirrors the g_Tag := ATag; If Not CompareFlags(...)
+// Then ProcessTag(ATag, ...) idiom used throughout ProcessRecord.
+Procedure TryTagGatedByFlag(Const ATag, AFlagName: String; e, o: IInterface);
+Begin
+  g_Tag := ATag;
+  If Not CompareFlags(e, o, 'ACBS\Template Flags', AFlagName, False, False) Then
+    ProcessTag(ATag, e, o);
+End;
+
+
+Function ProcessRecord(e: IwbMainRecord): integer;
+
+Var 
+  o               : IwbMainRecord;
+  sSignature      : string;
+  sGfxNamesSigs   : string;
+  ConflictState   : TConflictThis;
+  iFormID         : integer;
+Begin
+  ConflictState := ConflictAllForMainRecord(e);
+
+  If (ConflictState = caUnknown)
+     Or (ConflictState = caOnlyOne)
+     Or (ConflictState = caNoConflict) Then
+    Exit;
+
+  // exit if the record should not be processed
+  If SameText(g_FileName, 'Dawnguard.esm') Then
+    Begin
+      iFormID := GetLoadOrderFormID(e) And $00FFFFFF;
+      If (iFormID = $00016BCF)
+         Or (iFormID = $0001EE6D)
+         Or (iFormID = $0001FA4C)
+         Or (iFormID = $00039F67)
+         Or (iFormID = $0006C3B6) Then
+        Exit;
+    End;
+
+  // get master record if record is an override
+  o := Master(e);
+
+  {#IF MULTI}
+    If Not Assigned(o) Then
+    Exit;
+
+  // Multi mode: ignore non-stock masters to keep each plugin’s results anchored
+  // to the base game. Walk up the master chain until we hit a stock master.
+  While Assigned(o) And (Not IsStockMasterFile(GetFileName(GetFile(o)))) Do
+    o := Master(o);
+  {#ENDIF}
+
+  If Not Assigned(o) Then
+    Exit;
+
+  // if record overrides several masters, then get the last one
+  o := HighestOverrideOrSelf(o, OverrideCount(o));
+
+  If Equals(e, o) Then
+    Exit;
+
+  // stop processing deleted records to avoid errors
+  If GetIsDeleted(e)
+     Or GetIsDeleted(o) Then
+    Exit;
+
+  sSignature := Signature(e);
+
+  logInfo(Name(e));
+
+  // -------------------------------------------------------------------------------
+  // GROUP: Supported tags exclusive to FNV
+  // -------------------------------------------------------------------------------
+  If wbIsFalloutNV Then
+    If sSignature = 'WEAP' Then
+      ProcessTag('WeaponMods', e, o);
+
+  // -------------------------------------------------------------------------------
+  // GROUP: Supported tags exclusive to TES4
+  // -------------------------------------------------------------------------------
+  If wbIsOblivion Then
+    Begin
+      If ContainsStr('CREA NPC_', sSignature) Then
+        Begin
+          ProcessTag('Actors.Spells', e, o);
+
+          If sSignature = 'CREA' Then
+            ProcessTag('Creatures.Blood', e, o);
+        End
+
+      Else If sSignature = 'RACE' Then
+             Begin
+               ProcessRaceSpells(e, o);
+               ProcessTag('R.Attributes-F', e, o);
+               ProcessTag('R.Attributes-M', e, o);
+             End
+
+      Else If sSignature = 'ROAD' Then
+             ProcessTag('Roads', e, o)
+
+      Else If sSignature = 'SPEL' Then
+             ProcessTag('SpellStats', e, o);
+
+      // Scripts on Oblivion: SCRI subrecord in the signatures below. Oblivion
+      // lacks the template flag system, so this is a plain signature check
+      // (no 'Use Script' gate like FO3/FNV/Skyrim). Independent If — per-tag
+      // dedup is handled inside ProcessTag.
+      If ContainsStr('ACTI ALCH APPA ARMO BOOK CLOT CONT CREA DOOR FLOR FURN INGR KEYM LIGH LVLC MISC NPC_ QUST SGST SLGM WEAP', sSignature) Then
+        ProcessTag('Scripts', e, o);
+    End;
+
+  // -------------------------------------------------------------------------------
+  // GROUP: Supported tags exclusive to TES5, SSE
+  // -------------------------------------------------------------------------------
+  If wbIsSkyrim Then
+    Begin
+      // NOTE: Each signature branch below is an INDEPENDENT If (not Else If).
+      // The Keywords signature list contains 'NPC_', so an If/Else If chain
+      // would short-circuit on Keywords and silently skip the dedicated NPC_
+      // branch (NPC.Perks.*, Actors.Factions, NPC.AIPackageOverrides,
+      // Actors.Spells, NPC.AttackRace, NPC.CrimeFaction, NPC.DefaultOutfit).
+      // Per-tag dedup is handled by ProcessTag, so independent Ifs are safe.
+      If sSignature = 'CELL' Then
+        Begin
+          ProcessTag('C.Location', e, o);
+          ProcessTag('C.LockList', e, o);
+          ProcessTag('C.Regions', e, o);
+          ProcessTag('C.SkyLighting', e, o);
+        End;
+
+      If ContainsStr('ACTI ALCH AMMO ARMO BOOK FLOR FURN INGR KEYM LCTN MGEF MISC NPC_ RACE SCRL SLGM SPEL TACT WEAP', sSignature) Then
+        ProcessTag('Keywords', e, o);
+
+      If sSignature = 'FACT' Then
+        Begin
+          ProcessTag('Relations.Add', e, o);
+          ProcessTag('Relations.Change', e, o);
+          ProcessTag('Relations.Remove', e, o);
+        End;
+
+      If sSignature = 'NPC_' Then
+        Begin
+          ProcessTag('NPC.Perks.Add', e, o);
+          ProcessTag('NPC.Perks.Change', e, o);
+          ProcessTag('NPC.Perks.Remove', e, o);
+
+          TryTagGatedByFlag('Actors.Factions',        'Use Factions',     e, o);
+          TryTagGatedByFlag('NPC.AIPackageOverrides', 'Use AI Packages',  e, o);
+          // Skyrim/SSE Actors.Spells — skip if the NPC inherits its spell list
+          // from a template (modifying SPLO directly would be ignored by the engine).
+          TryTagGatedByFlag('Actors.Spells',          'Use Spell List',   e, o);
+
+          ProcessTag('NPC.AttackRace', e, o);
+          ProcessTag('NPC.CrimeFaction', e, o);
+          ProcessTag('NPC.DefaultOutfit', e, o);
+        End;
+
+      If sSignature = 'OTFT' Then
+        Begin
+          ProcessTag('Outfits.Add', e, o);
+          ProcessTag('Outfits.Remove', e, o);
+        End;
+
+      // R.AddSpells / R.ChangeSpells (Skyrim/SSE/Enderal). ProcessRaceSpells
+      // emits the Add/Change split (Adds-only -> R.AddSpells, Removes present
+      // -> R.ChangeSpells) using the per-game SPLO array path.
+      If sSignature = 'RACE' Then
+        ProcessRaceSpells(e, o);
+
+      // COBJ (Constructible Object) inventory on Skyrim+. Uses the same
+      // 'Items' / CNTO shape as CONT, so the standard Invent.* handlers apply.
+      If sSignature = 'COBJ' Then
+        Begin
+          ProcessTag('Invent.Add', e, o);
+          ProcessTag('Invent.Change', e, o);
+          ProcessTag('Invent.Remove', e, o);
+        End;
+
+      // Import Destructible (skyrim __init__ destructible_types; no FO3 FNV gating).
+      If ContainsStr('ACTI ALCH AMMO APPA ARMO BOOK CONT DOOR FLOR FURN KEYM LIGH MISC MSTT NPC_ PROJ SCRL SLGM TACT WEAP', sSignature) Then
+        ProcessTag('Destructible', e, o);
+    End;
+
+  // -------------------------------------------------------------------------------
+  // GROUP: Supported tags exclusive to FO3, FNV
+  // -------------------------------------------------------------------------------
+  If wbIsFallout3 Or wbIsFalloutNV Then
+    Begin
+      If sSignature = 'FLST' Then
+        ProcessTag('Deflst', e, o);
+
+      // Creatures.Blood applies to CREA on both Oblivion (NAM0/NAM1) and
+      // FO3/FNV (CNAM). The Oblivion dispatch lives in the Oblivion block
+      // above; this is the FO3/FNV counterpart.
+      If sSignature = 'CREA' Then
+        ProcessTag('Creatures.Blood', e, o);
+
+      If ContainsStr('ACTI ALCH AMMO BOOK CONT DOOR FURN IMOD KEYM MISC MSTT PROJ TACT TERM WEAP', sSignature) Then
+        ProcessTag('Destructible', e, o)
+
+        // special handling for CREA and NPC_ record types
+      Else If ContainsStr('CREA NPC_', sSignature) Then
+             TryTagGatedByFlag('Destructible', 'Use Model/Animation', e, o)
+
+             // added in Wrye Bash 307 Beta 6
+      Else If sSignature = 'FACT' Then
+             Begin
+               ProcessTag('Relations.Add', e, o);
+               ProcessTag('Relations.Change', e, o);
+               ProcessTag('Relations.Remove', e, o);
+             End;
+    End;
+
+  // -------------------------------------------------------------------------------
+  // GROUP: Supported tags exclusive to FO3, FNV, TES4
+  // -------------------------------------------------------------------------------
+  If wbIsFallout3 Or wbIsFalloutNV Or wbIsOblivion Then
+    Begin
+      If ContainsStr('CREA NPC_', sSignature) Then
+        Begin
+          If sSignature = 'CREA' Then
+            ProcessTag('Creatures.Type', e, o);
+
+          g_Tag := 'Actors.Factions';
+          If wbIsOblivion Or Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Factions', False, False) Then
+            ProcessTag('Actors.Factions', e, o);
+
+          If sSignature = 'NPC_' Then
+            Begin
+              ProcessTag('NPC.Eyes', e, o);
+              ProcessTag('NPC.FaceGen', e, o);
+              ProcessTag('NPC.Hair', e, o);
+
+              // Oblivion-only here: NPC.Class / NPC.Race for FO3/FNV/Skyrim are
+              // emitted further down with template-flag gating. Oblivion has no
+              // template flag system, so emit unconditionally.
+              If wbIsOblivion Then
+                Begin
+                  ProcessTag('NPC.Class', e, o);
+                  ProcessTag('NPC.Race',  e, o);
+                End;
+            End;
+        End
+
+      Else If sSignature = 'RACE' Then
+             Begin
+               ProcessTag('R.Body-F', e, o);
+               ProcessTag('R.Body-M', e, o);
+               ProcessTag('R.Body-Size-F', e, o);
+               ProcessTag('R.Body-Size-M', e, o);
+               ProcessTag('R.Eyes', e, o);
+               ProcessTag('R.Hair', e, o);
+               ProcessTag('R.Relations.Add', e, o);
+               ProcessTag('R.Relations.Change', e, o);
+               ProcessTag('R.Relations.Remove', e, o);
+               // R.Ears/Head/Mouth/Teeth are Oblivion/FO3/FNV-only per Wrye
+               // Bash; emitted here rather than in the FO3/FNV/Skyrim block.
+               ProcessTag('R.Ears', e, o);
+               ProcessTag('R.Head', e, o);
+               ProcessTag('R.Mouth', e, o);
+               ProcessTag('R.Teeth', e, o);
+             End;
+    End;
+
+  // Skyrim/SSE/Enderal: RACE body/eyes/hair/relations (WB import_races_attrs);
+  // no R.Ears/Head/Mouth/Teeth here (FO3/FNV/Oblivion-only in WB).
+  If wbIsSkyrim And (sSignature = 'RACE') Then
+    Begin
+      ProcessTag('R.Body-F', e, o);
+      ProcessTag('R.Body-M', e, o);
+      ProcessTag('R.Body-Size-F', e, o);
+      ProcessTag('R.Body-Size-M', e, o);
+      ProcessTag('R.Eyes', e, o);
+      ProcessTag('R.Hair', e, o);
+      ProcessTag('R.Relations.Add', e, o);
+      ProcessTag('R.Relations.Change', e, o);
+      ProcessTag('R.Relations.Remove', e, o);
+    End;
+
+  // -------------------------------------------------------------------------------
+  // GROUP: Supported tags exclusive to FO3, FNV, TES5, SSE
+  // -------------------------------------------------------------------------------
+  If wbIsFallout3 Or wbIsFalloutNV Or wbIsSkyrim Then
+    Begin
+      If ContainsStr('CREA NPC_', sSignature) Then
+        Begin
+          TryTagGatedByFlag('Actors.ACBS',      'Use Stats',        e, o);
+          TryTagGatedByFlag('Actors.AIData',    'Use AI Data',      e, o);
+          TryTagGatedByFlag('Actors.AIPackages','Use AI Packages',  e, o);
+
+          If sSignature = 'CREA' Then
+            TryTagGatedByFlag('Actors.Anims',   'Use Model/Animation', e, o);
+
+          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Use Traits', False, False) Then
+            Begin
+              ProcessTag('Actors.CombatStyle', e, o);
+              ProcessTag('Actors.DeathItem', e, o);
+            End;
+
+          TryTagGatedByFlag('Actors.Skeleton',  'Use Model/Animation', e, o);
+          TryTagGatedByFlag('Actors.Stats',     'Use Stats',           e, o);
+
+          If wbIsFallout3 Or wbIsFalloutNV Or (sSignature = 'NPC_') Then
+            ProcessTag('Actors.Voice', e, o);
+
+          If sSignature = 'NPC_' Then
+            Begin
+              TryTagGatedByFlag('NPC.Class', 'Use Traits', e, o);
+              TryTagGatedByFlag('NPC.Race',  'Use Traits', e, o);
+            End;
+
+          TryTagGatedByFlag('Scripts', 'Use Script', e, o);
+
+          // FO3/FNV Actors.Spells (CREA + NPC_). Skyrim/SSE NPC_ Actors.Spells is
+          // handled by the dedicated wbIsSkyrim NPC_ block above. The FNV/FO3
+          // template flag is named 'Use Actor Effect List' (not 'Use Spell List').
+          If wbIsFallout3 Or wbIsFalloutNV Then
+            TryTagGatedByFlag('Actors.Spells', 'Use Actor Effect List', e, o);
+        End;
+
+      If sSignature = 'CELL' Then
+        Begin
+          ProcessTag('C.Acoustic', e, o);
+          ProcessTag('C.Encounter', e, o);
+          ProcessTag('C.ForceHideLand', e, o);
+          ProcessTag('C.ImageSpace', e, o);
+        End;
+
+      If ContainsStr('ACTI ALCH ARMO CONT DOOR FLOR FURN INGR KEYM LIGH LVLC MISC QUST WEAP', sSignature) Then
+        ProcessTag('Scripts', e, o);
+    End;
+
+  // -------------------------------------------------------------------------------
+  // GROUP: RACE tags supported on every game except FO4.
+  // R.Description / R.Skills / R.Voice-F / R.Voice-M apply to Oblivion,
+  // FO3/FNV, and Skyrim per Wrye Bash.
+  // -------------------------------------------------------------------------------
+  If Not wbIsFallout4 And (sSignature = 'RACE') Then
+    Begin
+      ProcessTag('R.Description', e, o);
+      ProcessTag('R.Skills', e, o);
+      If wbIsSkyrim Then
+        ProcessTag('R.Stats', e, o);
+      ProcessTag('R.Voice-F', e, o);
+      ProcessTag('R.Voice-M', e, o);
+    End;
+
+  // -------------------------------------------------------------------------------
+  // GROUP: Supported tags exclusive to FO3, FNV, TES4, TES5, SSE
+  // -------------------------------------------------------------------------------
+  If wbIsFallout3 Or wbIsFalloutNV Or wbIsOblivion Or wbIsSkyrim Then
+    Begin
+      If sSignature = 'CELL' Then
+        Begin
+          ProcessTag('C.Climate', e, o);
+          ProcessTag('C.Light', e, o);
+          ProcessTag('C.MiscFlags', e, o);
+          ProcessTag('C.Music', e, o);
+          ProcessTag('C.Name', e, o);
+          ProcessTag('C.Owner', e, o);
+          ProcessTag('C.RecordFlags', e, o);
+          // C.Regions: FO3 FNV Oblivion cellRecAttrs; Skyrim emits above (wbIsSkyrim block).
+          If Not wbIsSkyrim Then
+            ProcessTag('C.Regions', e, o);
+          ProcessTag('C.Water', e, o);
+        End;
+
+      // Delev, Relev — leveled list types per game (bush.game.leveled_list_types)
+      If wbIsOblivion And ContainsStr('LVLC LVLI LVSP', sSignature) Then
+        ProcessDelevRelevTags(e, o);
+      If (wbIsFallout3 Or wbIsFalloutNV) And ContainsStr('LVLC LVLI LVLN', sSignature) Then
+        ProcessDelevRelevTags(e, o);
+      If wbIsSkyrim And ContainsStr('LVLI LVLN LVSP', sSignature) Then
+        ProcessDelevRelevTags(e, o);
+
+      sGfxNamesSigs := 'ACTI ALCH AMMO APPA ARMO BOOK BSGN CLAS CLOT DOOR FLOR FURN INGR KEYM LIGH MGEF MISC SGST SLGM WEAP';
+      If wbIsSkyrim Then
+        sGfxNamesSigs := 'ACTI ALCH AMMO APPA ARMO AVIF BOOK CLAS CLFM CONT DOOR ENCH EXPL EYES FACT FLOR FURN HAZD HDPT INGR KEYM LCTN LIGH MESG MGEF MISC MSTT NPC_ PERK PROJ QUST RACE SCRL SHOU SLGM SNCT SPEL TACT TREE WATR WEAP WOOP';
+
+      If ContainsStr(sGfxNamesSigs, sSignature) Then
+        Begin
+          ProcessTag('Graphics', e, o);
+          ProcessTag('Names', e, o);
+          ProcessTag('Stats', e, o);
+
+          If ContainsStr('ACTI DOOR LIGH MGEF', sSignature) Then
+            Begin
+              ProcessTag('Sound', e, o);
+
+              If sSignature = 'MGEF' Then
+                ProcessTag('EffectStats', e, o);
+            End;
+        End;
+
+      If ContainsStr('CREA EFSH GRAS LSCR LTEX REGN STAT TREE', sSignature) Then
+        ProcessTag('Graphics', e, o);
+
+      // OB-only Graphics dispatch for record types not covered by sGfxNamesSigs.
+      // Per Wrye Bash OB Graphics: CONT (MODL), EYES (ICON), HAIR (ICON+MODL),
+      // QUST (ICON), SKIL (ICON). Handler buckets in the Graphics ProcessTag
+      // branch are extended to match.
+      If wbIsOblivion And ContainsStr('CONT EYES HAIR QUST SKIL', sSignature) Then
+        ProcessTag('Graphics', e, o);
+
+      // FO3/FNV-only Stats dispatch for ARMA. Handler at line ~3239 already
+      // evaluates ARMA DNAM; only the dispatch was missing.
+      If (wbIsFallout3 Or wbIsFalloutNV) And (sSignature = 'ARMA') Then
+        ProcessTag('Stats', e, o);
+
+      If sSignature = 'CONT' Then
+        Begin
+          ProcessTag('Invent.Add', e, o);
+          ProcessTag('Invent.Change', e, o);
+          ProcessTag('Invent.Remove', e, o);
+          ProcessTag('Names', e, o);
+          ProcessTag('Sound', e, o);
+        End;
+
+      If ContainsStr('DIAL ENCH EYES FACT HAIR QUST RACE SPEL WRLD', sSignature) Then
+        Begin
+          ProcessTag('Names', e, o);
+
+          If sSignature = 'ENCH' Then
+            ProcessTag('EnchantmentStats', e, o);
+
+          If sSignature = 'SPEL' Then
+            ProcessTag('SpellStats', e, o);
+        End;
+
+      // FO3/FNV-only Names dispatch for record types not covered by
+      // sGfxNamesSigs (which is OB-shaped on these games). Names handler is a
+      // uniform EvaluateByPath(FULL); extension is dispatch-only.
+      If (wbIsFallout3 Or wbIsFalloutNV) And ContainsStr('AVIF COBJ MESG NOTE PERK TACT TERM', sSignature) Then
+        ProcessTag('Names', e, o);
+
+      If sSignature = 'FACT' Then
+        Begin
+          ProcessTag('Relations.Add', e, o);
+          ProcessTag('Relations.Change', e, o);
+          ProcessTag('Relations.Remove', e, o);
+        End;
+
+      If (sSignature = 'WTHR') Then
+        ProcessTag('Sound', e, o);
+
+      // special handling for CREA and NPC_
+      If ContainsStr('CREA NPC_', sSignature) Then
+        Begin
+          If wbIsOblivion Or wbIsFallout3 Or wbIsFalloutNV Or (sSignature = 'NPC_') Then
+            ProcessTag('Actors.RecordFlags', e, o);
+
+          If wbIsOblivion Then
+            Begin
+              ProcessTag('Invent.Add', e, o);
+              ProcessTag('Invent.Change', e, o);
+              ProcessTag('Invent.Remove', e, o);
+              ProcessTag('Names', e, o);
+
+              If sSignature = 'CREA' Then
+                ProcessTag('Sound', e, o);
+            End;
+
+          If Not wbIsOblivion Then
+            Begin
+              TryTagGatedByFlag('Invent.Add',    'Use Inventory', e, o);
+              TryTagGatedByFlag('Invent.Change', 'Use Inventory', e, o);
+              TryTagGatedByFlag('Invent.Remove', 'Use Inventory', e, o);
+              TryTagGatedByFlag('Names',         'Use Base Data', e, o);
+
+              If sSignature = 'CREA' Then
+                TryTagGatedByFlag('Sound', 'Use Model/Animation', e, o);
+            End;
+        End;
+    End;
+
+  // -------------------------------------------------------------------------------
+  // GROUP: Fallout 4 (Wrye Bash patcher coverage)
+  // -------------------------------------------------------------------------------
+  If wbIsFallout4 Then
+    Begin
+      If sSignature = 'NPC_' Then
+        Begin
+          // FO4 template flag names are bare words (no 'Use ' prefix) compared
+          // to the FO3/FNV/Skyrim set.
+          TryTagGatedByFlag('Actors.ACBS',           'Stats',       e, o);
+          TryTagGatedByFlag('Actors.AIData',         'AI Data',     e, o);
+          TryTagGatedByFlag('Actors.AIPackages',     'AI Packages', e, o);
+
+          If Not CompareFlags(e, o, 'ACBS\Template Flags', 'Traits', False, False) Then
+            Begin
+              ProcessTag('Actors.CombatStyle', e, o);
+              ProcessTag('Actors.DeathItem', e, o);
+            End;
+
+          TryTagGatedByFlag('Actors.Stats',          'Stats',       e, o);
+
+          ProcessTag('Actors.Voice', e, o);
+          ProcessTag('Actors.RecordFlags', e, o);
+
+          TryTagGatedByFlag('NPC.Class',             'Traits',      e, o);
+          TryTagGatedByFlag('NPC.Race',              'Traits',      e, o);
+
+          ProcessTag('NPC.Perks.Add', e, o);
+          ProcessTag('NPC.Perks.Change', e, o);
+          ProcessTag('NPC.Perks.Remove', e, o);
+
+          TryTagGatedByFlag('Actors.Factions',       'Factions',    e, o);
+          TryTagGatedByFlag('NPC.AIPackageOverrides','AI Packages', e, o);
+
+          ProcessTag('NPC.AttackRace', e, o);
+          ProcessTag('NPC.CrimeFaction', e, o);
+          ProcessTag('NPC.DefaultOutfit', e, o);
+
+          TryTagGatedByFlag('Invent.Add',    'Inventory', e, o);
+          TryTagGatedByFlag('Invent.Change', 'Inventory', e, o);
+          TryTagGatedByFlag('Invent.Remove', 'Inventory', e, o);
+          TryTagGatedByFlag('Names',         'Base Data', e, o);
+
+          ProcessTag('Actors.Spells', e, o);
+        End;
+
+      If ContainsStr('ACTI ALCH AMMO ARMO ARTO BOOK CONT DOOR FLOR FURN IDLM INGR KEYM LCTN LIGH MGEF MISC MSTT NPC_ SPEL', sSignature) Then
+        ProcessTag('Keywords', e, o);
+
+      If ContainsStr('AACT ACTI ALCH AMMO ARMO AVIF BOOK CLAS CLFM CMPO CONT DOOR ENCH EXPL FACT FLOR FLST FURN HAZD HDPT INGR KEYM KYWD LIGH MESG MGEF MISC MSTT NOTE NPC_ OMOD PERK PROJ SCOL SNCT SPEL STAT', sSignature) Then
+        ProcessTag('Names', e, o);
+
+      If ContainsStr('ACTI ALCH AMMO ARMO BOOK CONT DOOR FLOR FURN INGR KEYM LIGH MISC MSTT NPC_ PROJ', sSignature) Then
+        ProcessTag('Destructible', e, o);
+
+      If sSignature = 'CONT' Then
+        Begin
+          ProcessTag('Invent.Add', e, o);
+          ProcessTag('Invent.Change', e, o);
+          ProcessTag('Invent.Remove', e, o);
+        End;
+
+      If sSignature = 'FURN' Then
+        Begin
+          ProcessTag('Invent.Add', e, o);
+          ProcessTag('Invent.Change', e, o);
+          ProcessTag('Invent.Remove', e, o);
+        End;
+
+      // WB inventory_types: CONT, FURN, NPC_. COBJ shares list/inventory import patterns for recipes.
+      If sSignature = 'COBJ' Then
+        Begin
+          ProcessTag('Invent.Add', e, o);
+          ProcessTag('Invent.Change', e, o);
+          ProcessTag('Invent.Remove', e, o);
+        End;
+
+      If sSignature = 'FACT' Then
+        Begin
+          ProcessTag('Relations.Add', e, o);
+          ProcessTag('Relations.Change', e, o);
+          ProcessTag('Relations.Remove', e, o);
+        End;
+
+      If sSignature = 'OTFT' Then
+        Begin
+          ProcessTag('Outfits.Add', e, o);
+          ProcessTag('Outfits.Remove', e, o);
+        End;
+
+      // Deflst applies to FO3/FNV only per Wrye Bash; FO4 has no equivalent.
+
+      If sSignature = 'MGEF' Then
+        ProcessTag('EffectStats', e, o);
+
+      If sSignature = 'ENCH' Then
+        ProcessTag('EnchantmentStats', e, o);
+
+      If ContainsStr('ARMO EXPL', sSignature) Then
+        Begin
+          ProcessTag('Enchantments', e, o);
+          ProcessTag('Names', e, o);
+        End;
+
+      If ContainsStr('LVLI LVLN LVSP', sSignature) Then
+        ProcessDelevRelevTags(e, o);
+    End;
+
+  // ObjectBounds — per-game signature whitelist.
+  If wbIsFallout3 And ContainsStr('ACTI ADDN ALCH AMMO ARMA ARMO ASPC BOOK COBJ CONT CREA DOOR EXPL FURN GRAS IDLM INGR KEYM LIGH LVLC LVLI LVLN MISC MSTT NOTE NPC_ PROJ PWAT SCOL SOUN STAT TACT TERM TREE TXST WEAP', sSignature) Then
+    ProcessTag('ObjectBounds', e, o);
+
+  If wbIsFalloutNV And ContainsStr('ACTI ADDN ALCH AMMO ARMA ARMO ASPC BOOK CCRD CHIP CMNY COBJ CONT CREA DOOR EXPL FURN GRAS IDLM IMOD INGR KEYM LIGH LVLC LVLI LVLN MISC MSTT NOTE NPC_ PROJ PWAT SCOL SOUN STAT TACT TERM TREE TXST WEAP', sSignature) Then
+    ProcessTag('ObjectBounds', e, o);
+
+  If wbIsSkyrim And ContainsStr('ACTI ADDN ALCH AMMO APPA ARMO ARTO ASPC BOOK CONT DOOR DUAL ENCH EXPL FLOR FURN GRAS HAZD IDLM INGR KEYM LIGH LVLI LVLN LVSP MISC MSTT NPC_ PROJ SCRL SLGM SOUN SPEL STAT TACT TREE TXST WEAP', sSignature) Then
+    ProcessTag('ObjectBounds', e, o);
+
+  If wbIsFallout4 And ContainsStr('ACTI ADDN ALCH AMMO ARMO ARTO ASPC BNDS BOOK CMPO CONT DOOR ENCH EXPL FLOR FURN GRAS HAZD IDLM INGR KEYM LIGH LVLI LVLN LVSP MISC MSTT NOTE NPC_ PKIN PROJ SCOL SOUN SPEL STAT', sSignature) Then
+    ProcessTag('ObjectBounds', e, o);
+
+  // Text — per-game signature whitelist. Not applicable to FO4.
+  If Not wbIsFallout4 Then
+    Begin
+      If wbIsOblivion And ContainsStr('BOOK BSGN CLAS LSCR MGEF SKIL', sSignature) Then
+        ProcessTag('Text', e, o);
+
+      If wbIsFallout3 And ContainsStr('AVIF BOOK CLAS LSCR MESG MGEF NOTE PERK TERM', sSignature) Then
+        ProcessTag('Text', e, o);
+
+      If wbIsFalloutNV And ContainsStr('AVIF BOOK CHAL CLAS IMOD LSCR MESG MGEF NOTE PERK TERM', sSignature) Then
+        ProcessTag('Text', e, o);
+
+      If wbIsSkyrim And ContainsStr('ALCH AMMO APPA ARMO AVIF BOOK CLAS LSCR MESG MGEF SCRL SHOU SPEL WEAP', sSignature) Then
+        ProcessTag('Text', e, o);
+    End;
+
+  // Heuristic Force* tags (opt-in; runs after all other detection so it can read TagExists state).
+  ProcessForceTagHeuristics(e, o);
+End;
+
+
+Function Finalize: integer;
+Begin
+  Result := 0;
+{#IF SINGLE,DEBUG}
+  If g_MultiFileError Then
+    Begin
+      LogError('This script must be run on a single plugin per invocation.');
+      LogError('Targeted: ' + g_TargetFileName + '; also seen: ' + g_OtherFiles.CommaText);
+      LogError('Re-run with only one plugin selected.');
+      Result := 99;
+    End;
+{#ENDIF}
+
+  slLog.Free;
+  slTagRelationships.Free;
+  slSuggestedTags.Free;
+  slExistingTags.Free;
+  slDifferentTags.Free;
+  slBadTags.Free;
+  slDeprecatedTags.Free;
+
+  slBashTagsFileAdds.Free;
+  slBashTagsFileRemoves.Free;
+  slBashTagsFileLines.Free;
+{#IF SINGLE,DEBUG}
+  g_OtherFiles.Free;
+{#ENDIF}
+End;
+
+
+Function StrToBool(AValue: String): boolean;
+Begin
+  Result := (AValue = '1');
+End;
+
+
+Function RegExMatchGroup(AExpr: String; ASubj: String; AGroup: integer): string;
+
+Var 
+  re     : TPerlRegEx;
+Begin
+  Result := '';
+  re := TPerlRegEx.Create;
+  Try
+    re.RegEx := AExpr;
+    re.Options := [];
+    re.Subject := ASubj;
+    If re.Match Then
+      Result := re.Groups[AGroup];
+  Finally
+    re.Free;
+End;
+End;
+
+
+Function RegExReplace(Const AExpr: String; ARepl: String; ASubj: String): string;
+
+Var 
+  re      : TPerlRegEx;
+  sResult : string;
+Begin
+  Result := '';
+  re := TPerlRegEx.Create;
+  Try
+    re.RegEx := AExpr;
+    re.Options := [];
+    re.Subject := ASubj;
+    re.Replacement := ARepl;
+    re.ReplaceAll;
+    sResult := re.Subject;
+  Finally
+    re.Free;
+    Result := sResult;
+End;
+End;
+
+
+Function EditValues(Const AElement: IwbElement): string;
+
+Var 
+  kElement : IInterface;
+  sName    : string;
+  i        : integer;
+Begin
+  Result := GetEditValue(AElement);
+
+  For i := 0 To Pred(ElementCount(AElement)) Do
+    Begin
+      kElement := ElementByIndex(AElement, i);
+      sName    := Name(kElement);
+
+      If SameText(sName, 'unknown') Or SameText(sName, 'unused') Then
+        Continue;
+
+      If Result <> '' Then
+        Result := Result + ' ' + EditValues(kElement)
+      Else
+        Result := EditValues(kElement);
+    End;
+End;
+
+
+Function CompareAssignment(AElement: IwbElement; AMaster: IwbElement): boolean;
+Begin
+  Result := False;
+
+  If TagExists(g_Tag) Then
+    Exit;
+
+  If Not Assigned(AElement) And Not Assigned(AMaster) Then
+    Exit;
+
+  If Assigned(AElement) And Assigned(AMaster) Then
+    Exit;
+
+  AddLogEntry('Assigned', AElement, AMaster);
+  slSuggestedTags.Add(g_Tag);
+
+  Result := True;
+End;
+
+
+Function CompareElementCount(AElement: IwbElement; AMaster: IwbElement): boolean;
+Begin
+  Result := False;
+
+  If TagExists(g_Tag) Then
+    Exit;
+
+  If ElementCount(AElement) = ElementCount(AMaster) Then
+    Exit;
+
+  AddLogEntry('ElementCount', AElement, AMaster);
+  slSuggestedTags.Add(g_Tag);
+
+  Result := True;
+End;
+
+
+Function CompareElementCountAdd(AElement: IwbElement; AMaster: IwbElement): boolean;
+Begin
+  Result := False;
+
+  If TagExists(g_Tag) Then
+    Exit;
+
+  If ElementCount(AElement) <= ElementCount(AMaster) Then
+    Exit;
+
+  AddLogEntry('ElementCountAdd', AElement, AMaster);
+  slSuggestedTags.Add(g_Tag);
+
+  Result := True;
+End;
+
+
+Function CompareElementCountRemove(AElement: IwbElement; AMaster: IwbElement): boolean;
+Begin
+  Result := False;
+
+  If TagExists(g_Tag) Then
+    Exit;
+
+  If ElementCount(AElement) >= ElementCount(AMaster) Then
+    Exit;
+
+  AddLogEntry('ElementCountRemove', AElement, AMaster);
+  slSuggestedTags.Add(g_Tag);
+
+  Result := True;
+End;
+
+
+Function CompareEditValue(AElement: IwbElement; AMaster: IwbElement): boolean;
+Begin
+  Result := False;
+
+  If TagExists(g_Tag) Then
+    Exit;
+
+  If SameText(GetEditValue(AElement), GetEditValue(AMaster)) Then
+    Exit;
+
+  AddLogEntry('GetEditValue', AElement, AMaster);
+  slSuggestedTags.Add(g_Tag);
+
+  Result := True;
+End;
+
+
+// Inspect a single flag by name within a flags array at APath on both records.
+//
+// ANotOperator selects the comparison mode:
+//   False (default, "OR" mode): Result is True if the flag is set on EITHER
+//     the override or master. Callers use this as a template-flag gate — if
+//     the subrecord is inherited from a template on either side, the diff is
+//     meaningless and the outer code should skip. This is the mode behind
+//     every `If Not CompareFlags(..., False, False) Then ProcessTag(...)` site
+//     (including the TryTagGatedByFlag helper).
+//   True ("NOT" mode): Result is True if the flag DIFFERS between sides. Used
+//     only for a handful of per-cell flags (Behave Like Exterior, Use Sky
+//     Lighting, Has Water, Is Interior Cell, Can Travel From Here, etc.) where
+//     a flipped flag is itself the detection signal.
+//
+// ASuggest routes a True result into slSuggestedTags / AddLogEntry using the
+// current g_Tag. Most callers pass False and consume Result for their own gate.
+Function CompareFlags(AElement: IwbElement; AMaster: IwbElement; APath: String; AFlagName: String; ASuggest: boolean; ANotOperator: boolean): boolean;
+
+Var
+  x, y      : IwbElement;
+  a, b      : IwbElement;
+  sa, sb    : string;
+  sTestName : string;
+Begin
+  Result := False;
+
+  If TagExists(g_Tag) Then
+    Exit;
+
+  x := ElementByPath(AElement, APath);
+  y := ElementByPath(AMaster, APath);
+
+  a := ElementByName(x, AFlagName);
+  b := ElementByName(y, AFlagName);
+
+  sa := GetEditValue(a);
+  sb := GetEditValue(b);
+
+  If ANotOperator Then
+    Result := Not SameText(sa, sb)
+  Else
+    Result := StrToBool(sa) Or StrToBool(sb);
+
+  If ASuggest And Result Then
+    Begin
+      If ANotOperator Then
+        sTestName := 'CompareFlags:NOT'
+      Else
+        sTestName := 'CompareFlags:OR';
+      AddLogEntry(sTestName, x, y);
+      slSuggestedTags.Add(g_Tag);
+    End;
+End;
+
+
+Function CompareKeys(AElement: IwbElement; AMaster: IwbElement): boolean;
+
+Var 
+  sElementEditValues : string;
+  sMasterEditValues  : string;
+  ConflictState      : TConflictThis;
+Begin
+  Result := False;
+
+  If TagExists(g_Tag) Then
+    Exit;
+
+  ConflictState := ConflictAllForMainRecord(ContainingMainRecord(AElement));
+
+  If (ConflictState = caUnknown)
+     Or (ConflictState = caOnlyOne)
+     Or (ConflictState = caNoConflict) Then
+    Exit;
+
+  sElementEditValues := EditValues(AElement);
+  sMasterEditValues  := EditValues(AMaster);
+
+  If IsEmptyKey(sElementEditValues) And IsEmptyKey(sMasterEditValues) Then
+    Exit;
+
+  If SameText(sElementEditValues, sMasterEditValues) Then
+    Exit;
+
+  AddLogEntry('CompareKeys', AElement, AMaster);
+  slSuggestedTags.Add(g_Tag);
+
+  Result := True;
+End;
+
+
+Function CompareNativeValues(AElement: IwbElement; AMaster: IwbElement; APath: String): boolean;
+
+Var 
+  x : IwbElement;
+  y : IwbElement;
+Begin
+  Result := False;
+
+  If TagExists(g_Tag) Then
+    Exit;
+
+  x := ElementByPath(AElement, APath);
+  y := ElementByPath(AMaster, APath);
+
+  If GetNativeValue(x) = GetNativeValue(y) Then
+    Exit;
+
+  AddLogEntry('CompareNativeValues', AElement, AMaster);
+  slSuggestedTags.Add(g_Tag);
+
+  Result := True;
+End;
+
+
+Function SortedArrayElementByValue(AElement: IwbElement; APath: String; AValue: String): IwbElement;
+
+Var 
+  i      : integer;
+  kEntry : IwbElement;
+Begin
+  Result := Nil;
+  For i := 0 To Pred(ElementCount(AElement)) Do
+    Begin
+      kEntry := ElementByIndex(AElement, i);
+      If SameText(GetElementEditValues(kEntry, APath), AValue) Then
+        Begin
+          Result := kEntry;
+          Exit;
+        End;
+    End;
+End;
+
+
+// TODO: natively implemented in 4.1.4
+Procedure StringListDifference(ASet: TStringList; AOtherSet: TStringList; AOutput: TStringList);
+
+Var 
+  i : integer;
+Begin
+  For i := 0 To Pred(ASet.Count) Do
+    If AOtherSet.IndexOf(ASet[i]) = -1 Then
+      AOutput.Add(ASet[i]);
+End;
+
+
+// TODO: natively implemented in 4.1.4
+Procedure StringListIntersection(ASet: TStringList; AOtherSet: TStringList; AOutput: TStringList);
+
+Var 
+  i : integer;
+Begin
+  For i := 0 To Pred(ASet.Count) Do
+    If AOtherSet.IndexOf(ASet[i]) > -1 Then
+      AOutput.Add(ASet[i]);
+End;
+
+
+// Treats a serialized edit-value string as an "empty key" ONLY when it looks
+// like a flag-array bit string (exclusively '0' and '1' chars) and contains
+// no set bits. This is the original optimization's actual intent: allow
+// CompareKeys to bail out cheaply when both sides are all-zero flag masks.
+//
+// The earlier implementation returned True whenever the string had no literal
+// '1' char anywhere, which false-positives on any non-flag edit value that
+// happens to lack the digit '1' -- e.g. FormID hex like "00039F26", EditorIDs
+// like "CRFThalmorHQFaction", or the integer "0". That silently suppressed
+// real differences and caused false-negative tag suggestions (e.g. C.Owner on
+// cutting room floor.esp cell 00071FFE, where both the master XOWN reference
+// and the overriding one had edit values containing no '1' digit).
+Function IsEmptyKey(AEditValues: String): boolean;
+
+Var
+  i : integer;
+Begin
+  Result := False;
+
+  // Empty string: nothing to compare; treat as NOT an empty-key sentinel so
+  // the caller falls through to its own SameText check (SameText('','')=True
+  // will handle the truly-identical-empty case correctly).
+  If Length(AEditValues) = 0 Then
+    Exit;
+
+  // Non-flag-array content disqualifies the fast path.
+  For i := 1 To Length(AEditValues) Do
+    If (AEditValues[i] <> '0') And (AEditValues[i] <> '1') Then
+      Exit;
+
+  // All-'0'/'1' now. Any '1' means at least one bit set -> not empty.
+  For i := 1 To Length(AEditValues) Do
+    If AEditValues[i] = '1' Then
+      Exit;
+
+  Result := True;
+End;
+
+
+// Render a tag list for the Messages tab. Zero tags yields ANull verbatim;
+// non-empty yields "<count> <label>\r\n      {{BASH:tag1, tag2, ...}}" with
+// ASingular/APlural selected by count.
+Function FormatTags(ATags: TStringList; ASingular: String; APlural: String; ANull: String): string;
+
+Var
+  sLabel : string;
+Begin
+  If ATags.Count = 0 Then
+    Begin
+      Result := ANull;
+      Exit;
+    End;
+
+  If ATags.Count = 1 Then
+    sLabel := ASingular
+  Else
+    sLabel := APlural;
+
+  Result := IntToStr(ATags.Count) + ' ' + sLabel + #13#10 + StringOfChar(' ', 6)
+            + Format(' {{BASH:%s}}', [ATags.DelimitedText]);
+End;
+
+
+Function TagExists(ATag: String): boolean;
+Begin
+  Result := (slSuggestedTags.IndexOf(ATag) <> -1);
+End;
+
+
+Procedure Evaluate(AElement: IwbElement; AMaster: IwbElement);
+Begin
+  // exit if the tag already exists
+  If TagExists(g_Tag) Then
+    Exit;
+
+  // Suggest tag if one element exists while the other does not
+  If CompareAssignment(AElement, AMaster) Then
+    Exit;
+
+  // exit if the first element does not exist
+  If Not Assigned(AElement) Then
+    Exit;
+
+  // suggest tag if the two elements are different
+  If CompareElementCount(AElement, AMaster) Then
+    Exit;
+
+  // suggest tag if the edit values of the two elements are different
+  If CompareEditValue(AElement, AMaster) Then
+    Exit;
+
+  // compare any number of elements with CompareKeys
+  If CompareKeys(AElement, AMaster) Then
+    Exit;
+End;
+
+
+Procedure EvaluateAdd(AElement: IwbElement; AMaster: IwbElement);
+Begin
+  If TagExists(g_Tag) Then
+    Exit;
+
+  If Not Assigned(AElement) Then
+    Exit;
+
+  // suggest tag if the overriding element has more children than its master
+  If CompareElementCountAdd(AElement, AMaster) Then
+    Exit;
+End;
+
+
+Procedure EvaluateChange(AElement: IwbElement; AMaster: IwbElement);
+Begin
+  If TagExists(g_Tag) Then
+    Exit;
+
+  If Not Assigned(AElement) Then
+    Exit;
+
+  // suggest tag if the two elements and their descendants have different contents
+  If CompareKeys(AElement, AMaster) Then
+    Exit;
+End;
+
+
+Procedure EvaluateRemove(AElement: IwbElement; AMaster: IwbElement);
+Begin
+  If TagExists(g_Tag) Then
+    Exit;
+
+  If Not Assigned(AElement) Then
+    Exit;
+
+  // suggest tag if the master element has more children than its override
+  If CompareElementCountRemove(AElement, AMaster) Then
+    Exit;
+End;
+
+
+Procedure EvaluateByPath(AElement: IwbElement; AMaster: IwbElement; APath: String);
+
+Var 
+  x : IInterface;
+  y : IInterface;
+Begin
+  x := ElementByPath(AElement, APath);
+  y := ElementByPath(AMaster, APath);
+
+  Evaluate(x, y);
+End;
+
+
+Procedure EvaluateByPathAdd(AElement: IwbElement; AMaster: IwbElement; APath: String);
+
+Var 
+  x : IInterface;
+  y : IInterface;
+Begin
+  x := ElementByPath(AElement, APath);
+  y := ElementByPath(AMaster, APath);
+
+  EvaluateAdd(x, y);
+End;
+
+
+Procedure EvaluateByPathChange(AElement: IwbElement; AMaster: IwbElement; APath: String);
+
+Var 
+  x : IInterface;
+  y : IInterface;
+Begin
+  x := ElementByPath(AElement, APath);
+  y := ElementByPath(AMaster, APath);
+
+  EvaluateChange(x, y);
+End;
+
+
+Procedure EvaluateByPathRemove(AElement: IwbElement; AMaster: IwbElement; APath: String);
+
+Var 
+  x : IInterface;
+  y : IInterface;
+Begin
+  x := ElementByPath(AElement, APath);
+  y := ElementByPath(AMaster, APath);
+
+  EvaluateRemove(x, y);
+End;
+
+
+// Resolves by subrecord signature (XOWN, XRNK, XGLB, ...) instead of a named
+// struct path. Needed for tests where relying on an xEdit-defined parent
+// struct is fragile (e.g. the 'Ownership' RStruct whose collapsed-summary
+// GetEditValue varies across xEdit versions). Semantics otherwise match
+// EvaluateByPath: suggest the tag if one side is present and the other isn't,
+// if child counts differ, if the subrecord's own edit value differs, or if
+// the recursive serialized contents differ.
+Procedure EvaluateBySignature(AElement: IwbElement; AMaster: IwbElement; ASignature: String);
+
+Var 
+  x : IInterface;
+  y : IInterface;
+Begin
+  x := ElementBySignature(AElement, ASignature);
+  y := ElementBySignature(AMaster, ASignature);
+
+  Evaluate(x, y);
+End;
+
+
+// Resolves a named top-level list on a main record. ElementByPath is the
+// standard accessor but it does not reliably resolve wbArrayS-with-signature
+// arrays that live directly on the record (e.g. OTFT INAM 'Items'): on those
+// the path lookup can return nil while ElementBySignature succeeds. Callers
+// can therefore pass either the xEdit name ('Items', 'Perks', 'Relations',
+// 'FormIDs') or the 4-char signature ('INAM') — whichever is most reliable
+// for the record type.
+Function ResolveListArray(ARec: IInterface; Const ANameOrSig: String): IInterface;
+Begin
+  Result := ElementByPath(ARec, ANameOrSig);
+  If Not Assigned(Result) Then
+    Result := ElementBySignature(ARec, ANameOrSig);
+End;
+
+
+// Returns the "identity key" used for set-diff on a list entry. If ARefPath is
+// empty the key is the entry's own edit value (flat FormID lists like OTFT
+// 'Items' or FLST 'FormIDs'). Otherwise the key is taken from the named
+// sub-path inside the entry (struct lists like NPC_ 'Perks'->'Perk',
+// CONT 'Items'->'CNTO\Item', FACT 'Relations'->'Faction').
+Function ListEntryKey(AEntry: IInterface; Const ARefPath: String): string;
+Begin
+  If ARefPath = '' Then
+    Result := GetEditValue(AEntry)
+  Else
+    Result := GetElementEditValues(AEntry, ARefPath);
+End;
+
+
+// True iff an entry with the given key exists in the master array. Linear
+// scan; lists are small (perks, items, factions, relations rarely exceed
+// low double-digit counts).
+Function ListContainsKey(AArr: IInterface; Const AKey: String; Const ARefPath: String): boolean;
+
+Var 
+  j : integer;
+Begin
+  Result := False;
+  If Not Assigned(AArr) Then
+    Exit;
+  For j := 0 To Pred(ElementCount(AArr)) Do
+    If SameText(ListEntryKey(ElementByIndex(AArr, j), ARefPath), AKey) Then
+      Begin
+        Result := True;
+        Exit;
+      End;
+End;
+
+
+// Set-diff .Add detector for keyed sub-record lists (OTFT Items, CONT Items,
+// NPC_ Perks, FLST FormIDs, FACT Relations, RACE Relations).
+// Suggests ATagName iff at least one override entry's identity key is NOT
+// present in the master array. Unlike the prior element-count heuristic this
+// correctly fires when a mod substitutes items (same total count, different
+// entries), e.g. CRF's MQ101StormcloakPrisonerOutfit swapping a static ARMO
+// for a CRFArmorStormcloakCuirass LVLI.
+Procedure EvaluateListAdd(ARec: IInterface; AMaster: IInterface;
+                           Const AArrayName: String; Const ARefPath: String);
+
+Var 
+  kArr, kArrM : IInterface;
+  kEntry      : IInterface;
+  i           : integer;
+  sRef        : string;
+Begin
+  If TagExists(g_Tag) Then
+    Exit;
+
+  kArr  := ResolveListArray(ARec,    AArrayName);
+  kArrM := ResolveListArray(AMaster, AArrayName);
+
+  If Not Assigned(kArr) Then
+    Exit;
+  If ElementCount(kArr) = 0 Then
+    Exit;
+
+  For i := 0 To Pred(ElementCount(kArr)) Do
+    Begin
+      kEntry := ElementByIndex(kArr, i);
+      sRef   := ListEntryKey(kEntry, ARefPath);
+      If sRef = '' Then
+        Continue;
+
+      If Not ListContainsKey(kArrM, sRef, ARefPath) Then
+        Begin
+          AddLogEntry('ListAdd', kEntry, kArrM);
+          slSuggestedTags.Add(g_Tag);
+          Exit;
+        End;
+    End;
+End;
+
+
+// Symmetric of EvaluateListAdd. Suggests ATagName iff at least one master
+// entry's identity key is NOT present in the override array.
+Procedure EvaluateListRemove(ARec: IInterface; AMaster: IInterface;
+                              Const AArrayName: String; Const ARefPath: String);
+
+Var 
+  kArr, kArrM : IInterface;
+  kEntry      : IInterface;
+  i           : integer;
+  sRef        : string;
+Begin
+  If TagExists(g_Tag) Then
+    Exit;
+
+  kArr  := ResolveListArray(ARec,    AArrayName);
+  kArrM := ResolveListArray(AMaster, AArrayName);
+
+  If Not Assigned(kArrM) Then
+    Exit;
+  If ElementCount(kArrM) = 0 Then
+    Exit;
+
+  For i := 0 To Pred(ElementCount(kArrM)) Do
+    Begin
+      kEntry := ElementByIndex(kArrM, i);
+      sRef   := ListEntryKey(kEntry, ARefPath);
+      If sRef = '' Then
+        Continue;
+
+      If Not ListContainsKey(kArr, sRef, ARefPath) Then
+        Begin
+          AddLogEntry('ListRemove', kEntry, kArr);
+          slSuggestedTags.Add(g_Tag);
+          Exit;
+        End;
+    End;
+End;
+
+
+Procedure ProcessTag(ATag: String; e: IInterface; m: IInterface);
+
+Var 
+  x          : IInterface;
+  y          : IInterface;
+  a          : IInterface;
+  b          : IInterface;
+  j          : IInterface;
+  k          : IInterface;
+  sSignature : string;
+Begin
+  g_Tag := ATag;
+
+  If TagExists(g_Tag) Then
+    Exit;
+
+  sSignature := Signature(e);
+
+  // Bookmark: Actors.ACBS
+  If (g_Tag = 'Actors.ACBS') Then
+    Begin
+      x := ElementBySignature(e, 'ACBS');
+      y := ElementBySignature(m, 'ACBS');
+
+      If wbIsFallout4 And (sSignature = 'NPC_') Then
+        Begin
+          a := ElementByName(x, 'Flags');
+          b := ElementByName(y, 'Flags');
+
+          If Not CompareFlags(x, y, 'Template Flags', 'Stats', False, False) And CompareKeys(a, b) Then
+            Exit;
+
+          EvaluateByPath(x, y, 'XP Value Offset');
+          EvaluateByPath(x, y, 'Level');
+          EvaluateByPath(x, y, 'Calc min level');
+          EvaluateByPath(x, y, 'Calc max level');
+          EvaluateByPath(x, y, 'Disposition Base');
+          EvaluateByPath(x, y, 'Bleedout Override');
+          EvaluateByPath(x, y, 'Template Flags');
+        End
+      Else If wbIsSkyrim And (sSignature = 'NPC_') Then
+        Begin
+          a := ElementByName(x, 'Flags');
+          b := ElementByName(y, 'Flags');
+
+          If Not CompareFlags(x, y, 'Template Flags', 'Use Stats', False, False) And CompareKeys(a, b) Then
+            Exit;
+
+          EvaluateByPath(x, y, 'Magicka Offset');
+          EvaluateByPath(x, y, 'Stamina Offset');
+          EvaluateByPath(x, y, 'Level');
+          EvaluateByPath(x, y, 'Calc min level');
+          EvaluateByPath(x, y, 'Calc max level');
+          EvaluateByPath(x, y, 'Speed Multiplier');
+          EvaluateByPath(x, y, 'Disposition Base (unused)');
+          EvaluateByPath(x, y, 'Health Offset');
+          EvaluateByPath(x, y, 'Bleedout Override');
+          EvaluateByPath(x, y, 'Template Flags');
+        End
+      Else
+        Begin
+          a := ElementByName(x, 'Flags');
+          b := ElementByName(y, 'Flags');
+
+          If wbIsOblivion And CompareKeys(a, b) Then
+            Exit;
+
+          If Not wbIsOblivion And Not CompareFlags(x, y, 'Template Flags', 'Use Base Data', False, False) And CompareKeys(a, b) Then
+            Exit;
+
+          EvaluateByPath(x, y, 'Fatigue');
+          EvaluateByPath(x, y, 'Level');
+          EvaluateByPath(x, y, 'Calc min');
+          EvaluateByPath(x, y, 'Calc max');
+          EvaluateByPath(x, y, 'Speed Multiplier');
+          EvaluateByPath(e, m, 'DATA\Base Health');
+
+          If wbIsOblivion Or Not CompareFlags(x, y, 'Template Flags', 'Use AI Data', False, False) Then
+            EvaluateByPath(x, y, 'Barter gold');
+        End;
+    End
+
+    // Bookmark: Actors.AIData
+  Else If (g_Tag = 'Actors.AIData') Then
+         Begin
+           x := ElementBySignature(e, 'AIDT');
+           y := ElementBySignature(m, 'AIDT');
+
+           If wbIsFallout4 Then
+             Begin
+               EvaluateByPath(x, y, 'Aggression');
+               EvaluateByPath(x, y, 'Confidence');
+               EvaluateByPath(x, y, 'Energy Level');
+               EvaluateByPath(x, y, 'Morality');
+               EvaluateByPath(x, y, 'Mood');
+               EvaluateByPath(x, y, 'Assistance');
+               j := ElementByPath(x, 'Aggro');
+               k := ElementByPath(y, 'Aggro');
+               If Assigned(j) And Assigned(k) Then
+                 Evaluate(j, k);
+               EvaluateByPath(x, y, 'No Slow Approach');
+             End
+           Else If wbIsSkyrim And ContainsStr('CREA NPC_', sSignature) Then
+             Begin
+               EvaluateByPath(x, y, 'Aggression');
+               EvaluateByPath(x, y, 'Confidence');
+               EvaluateByPath(x, y, 'Energy Level');
+               EvaluateByPath(x, y, 'Morality');
+               EvaluateByPath(x, y, 'Mood');
+               EvaluateByPath(x, y, 'Assistance');
+               EvaluateByPath(x, y, 'Aggro\Aggro Radius Behavior');
+               EvaluateByPath(x, y, 'Aggro\Warn');
+               EvaluateByPath(x, y, 'Aggro\Warn/Attack');
+               EvaluateByPath(x, y, 'Aggro\Attack');
+             End
+           Else
+             Begin
+               EvaluateByPath(x, y, 'Aggression');
+               EvaluateByPath(x, y, 'Confidence');
+               EvaluateByPath(x, y, 'Energy level');
+               EvaluateByPath(x, y, 'Responsibility');
+               EvaluateByPath(x, y, 'Teaches');
+               EvaluateByPath(x, y, 'Maximum training level');
+
+               // Added in FO3/FNV; not present on Oblivion AIDT. EvaluateByPath
+               // is safe on Oblivion (missing path is a silent no-op).
+               If wbIsFallout3 Or wbIsFalloutNV Then
+                 Begin
+                   EvaluateByPath(x, y, 'Mood');
+                   EvaluateByPath(x, y, 'Assistance');
+                   EvaluateByPath(x, y, 'Aggro Radius Behavior');
+                   EvaluateByPath(x, y, 'Aggro Radius');
+                 End;
+
+               If CompareNativeValues(x, y, 'Buys/Sells and Services') Then
+                 Exit;
+             End;
+         End
+
+         // Bookmark: Actors.AIPackages
+  Else If (g_Tag = 'Actors.AIPackages') Then
+         EvaluateByPath(e, m, 'Packages')
+
+         // Bookmark: Actors.Anims
+  Else If (g_Tag = 'Actors.Anims') Then
+         EvaluateByPath(e, m, 'KFFZ')
+
+         // Bookmark: Actors.CombatStyle
+  Else If (g_Tag = 'Actors.CombatStyle') Then
+         EvaluateByPath(e, m, 'ZNAM')
+
+         // Bookmark: Actors.DeathItem
+  Else If (g_Tag = 'Actors.DeathItem') Then
+         EvaluateByPath(e, m, 'INAM')
+
+         // Bookmark: NPC.Perks.Add (TES5/SSE/FO4)
+         // Set-diff on Perks[*]\Perk (FormID). Element-count-only would miss
+         // substitutions (swap one perk for another at same total count).
+  Else If (g_Tag = 'NPC.Perks.Add') Then
+         EvaluateListAdd(e, m, 'Perks', 'Perk')
+
+         // Bookmark: NPC.Perks.Change
+         // Match entries on Perk; only fire if a shared perk's Rank differs.
+         // Adds/removes go to NPC.Perks.Add / NPC.Perks.Remove.
+  Else If (g_Tag = 'NPC.Perks.Change') Then
+         DiffSubrecordList(e, m, 'NPC.Perks.Change', 'Perks', 'Perk', 'Rank')
+
+         // Bookmark: NPC.Perks.Remove
+  Else If (g_Tag = 'NPC.Perks.Remove') Then
+         EvaluateListRemove(e, m, 'Perks', 'Perk')
+
+         // Bookmark: Actors.RecordFlags (!FO4)
+  Else If (g_Tag = 'Actors.RecordFlags') Then
+         EvaluateByPath(e, m, 'Record Header\Record Flags')
+
+         // Bookmark: Actors.Skeleton
+  Else If (g_Tag = 'Actors.Skeleton') Then
+         Begin
+           // assign Model elements
+           x := ElementByName(e, 'Model');
+           y := ElementByName(m, 'Model');
+
+           // exit if the Model property does not exist in the control record
+           If Not Assigned(x) Then
+             Exit;
+
+           // evaluate properties
+           EvaluateByPath(x, y, 'MODL');
+           EvaluateByPath(x, y, 'MODB');
+           EvaluateByPath(x, y, 'MODT');
+         End
+
+         // Bookmark: Actors.Spells
+  Else If (g_Tag = 'Actors.Spells') Then
+         EvaluateByPath(e, m, ActorSpellArrayPath)
+
+         // Bookmark: Actors.Stats
+  Else If (g_Tag = 'Actors.Stats') Then
+         Begin
+           If wbIsFallout4 And (sSignature = 'NPC_') Then
+             EvaluateByPath(e, m, 'PRPS')
+           Else
+             Begin
+               x := ElementBySignature(e, 'DATA');
+               y := ElementBySignature(m, 'DATA');
+
+               If sSignature = 'CREA' Then
+                 Begin
+                   EvaluateByPath(x, y, 'Health');
+                   EvaluateByPath(x, y, 'Combat Skill');
+                   EvaluateByPath(x, y, 'Magic Skill');
+                   EvaluateByPath(x, y, 'Stealth Skill');
+                   EvaluateByPath(x, y, 'Attributes');
+                 End
+               Else If sSignature = 'NPC_' Then
+                      If wbIsSkyrim Then
+                        Begin
+                          j := ElementBySignature(e, 'DNAM');
+                          k := ElementBySignature(m, 'DNAM');
+                          If Assigned(j) And Assigned(k) Then
+                            Evaluate(j, k);
+                        End
+                      Else
+                        Begin
+                          EvaluateByPath(x, y, 'Base Health');
+                          EvaluateByPath(x, y, 'Attributes');
+                          EvaluateByPath(e, m, 'DNAM\Skill Values');
+                          EvaluateByPath(e, m, 'DNAM\Skill Offsets');
+                        End;
+             End;
+         End
+
+         // Bookmark: Actors.Voice (FO3, FNV, TES5, SSE)
+  Else If (g_Tag = 'Actors.Voice') Then
+         EvaluateByPath(e, m, 'VTCK')
+
+         // Bookmark: C.Acoustic
+  Else If (g_Tag = 'C.Acoustic') Then
+         EvaluateByPath(e, m, 'XCAS')
+
+         // Bookmark: C.Climate
+         // Per-game gating flag differs: Oblivion/FO3/FNV use 'Behave Like
+         // Exterior', Skyrim/Enderal/SSE use 'Show Sky'. Fire the tag if the
+         // flag value differs between master and override, otherwise diff XCCM.
+  Else If (g_Tag = 'C.Climate') Then
+         Begin
+           If wbIsSkyrim Then
+             Begin
+               If CompareFlags(e, m, 'DATA', 'Show Sky', True, True) Then
+                 Exit;
+             End
+           Else
+             Begin
+               If CompareFlags(e, m, 'DATA', 'Behave Like Exterior', True, True) Then
+                 Exit;
+             End;
+
+           EvaluateByPath(e, m, 'XCCM');
+         End
+
+         // Bookmark: C.Encounter
+  Else If (g_Tag = 'C.Encounter') Then
+         EvaluateByPath(e, m, 'XEZN')
+
+         // Bookmark: C.ForceHideLand (!TES4, !FO4)
+  Else If (g_Tag = 'C.ForceHideLand') Then
+         EvaluateByPath(e, m, 'XCLC\Land Flags')
+
+         // Bookmark: C.ImageSpace
+  Else If (g_Tag = 'C.ImageSpace') Then
+         EvaluateByPath(e, m, 'XCIM')
+
+         // Bookmark: C.Light
+  Else If (g_Tag = 'C.Light') Then
+         EvaluateByPath(e, m, 'XCLL')
+
+         // Bookmark: C.Location
+  Else If (g_Tag = 'C.Location') Then
+         EvaluateByPath(e, m, 'XLCN')
+
+         // Bookmark: C.LockList
+  Else If (g_Tag = 'C.LockList') Then
+         EvaluateByPath(e, m, 'XILL')
+
+         // Bookmark: C.MiscFlags (!FO4)
+  Else If (g_Tag = 'C.MiscFlags') Then
+         Begin
+           If CompareFlags(e, m, 'DATA', 'Is Interior Cell', True, True) Then
+             Exit;
+
+           If CompareFlags(e, m, 'DATA', 'Can Travel From Here', True, True) Then
+             Exit;
+
+           If Not wbIsOblivion And Not wbIsFallout4 Then
+             If CompareFlags(e, m, 'DATA', 'No LOD Water', True, True) Then
+               Exit;
+
+           If wbIsOblivion Then
+             If CompareFlags(e, m, 'DATA', 'Force hide land (exterior cell) / Oblivion interior (interior cell)', True, True) Then
+               Exit;
+
+           If CompareFlags(e, m, 'DATA', 'Hand Changed', True, True) Then
+             Exit;
+         End
+
+         // Bookmark: C.Music
+         // Oblivion's music subrecord is XCMT; every other supported game uses XCMO.
+  Else If (g_Tag = 'C.Music') Then
+         If wbIsOblivion Then
+           EvaluateByPath(e, m, 'XCMT')
+         Else
+           EvaluateByPath(e, m, 'XCMO')
+
+         // Bookmark: FULL (C.Name, Names)
+  Else If (g_Tag = 'C.Name') Or (g_Tag = 'Names') Then
+         EvaluateByPath(e, m, 'FULL')
+
+         // Bookmark: C.Owner
+         //
+         // Wrye Bash's C.Owner patcher imports XOWN (Owner), XRNK (Faction
+         // rank), XGLB (Oblivion-only Global), and the DATA "Public Place"
+         // flag (Oblivion / FO3 / FNV). Historically this was a single
+         // EvaluateByPath(e, m, 'Ownership'), which (a) depends on xEdit's
+         // RStruct path resolving cleanly, (b) collapses all children into
+         // one recursive edit-value string that then hits CompareKeys'
+         // IsEmptyKey gate, and (c) omits the Public Place flag entirely.
+         //
+         // Replaced with direct subrecord-signature checks plus the flag,
+         // mirroring the Wrye Bash field set and staying robust against
+         // struct-path / summary-flag quirks across xEdit versions.
+  Else If (g_Tag = 'C.Owner') Then
+         Begin
+           EvaluateBySignature(e, m, 'XOWN');
+           EvaluateBySignature(e, m, 'XRNK');
+
+           If wbIsOblivion Then
+             EvaluateBySignature(e, m, 'XGLB');
+
+           If wbIsOblivion Or wbIsFallout3 Or wbIsFalloutNV Then
+             If CompareFlags(e, m, 'DATA', 'Public Place', True, True) Then
+               Exit;
+         End
+
+         // Bookmark: C.RecordFlags
+  Else If (g_Tag = 'C.RecordFlags') Then
+         EvaluateByPath(e, m, 'Record Header\Record Flags')
+
+         // Bookmark: C.Regions
+  Else If (g_Tag = 'C.Regions') Then
+         EvaluateByPath(e, m, 'XCLR')
+
+         // Bookmark: C.SkyLighting
+         // add tag if the Behave Like Exterior flag is set in one record but not the other
+  Else If (g_Tag = 'C.SkyLighting') And CompareFlags(e, m, 'DATA', 'Use Sky Lighting', True, True) Then
+         Exit
+
+         // Bookmark: C.Water
+  Else If (g_Tag = 'C.Water') Then
+         Begin
+           // add tag if Has Water flag is set in one record but not the other
+           If CompareFlags(e, m, 'DATA', 'Has Water', True, True) Then
+             Exit;
+
+           // exit if Is Interior Cell is set in either record
+           If CompareFlags(e, m, 'DATA', 'Is Interior Cell', False, False) Then
+             Exit;
+
+           EvaluateByPath(e, m, 'XCLW');
+           EvaluateByPath(e, m, 'XCWT');
+
+           // Water Noise Texture (XNAM) is FO3/FNV/Skyrim; Oblivion has no equivalent.
+           If Not wbIsOblivion Then
+             EvaluateByPath(e, m, 'XNAM');
+
+           // Water Environment Map (XWEM) is Skyrim/Enderal/SSE only.
+           If wbIsSkyrim Then
+             EvaluateByPath(e, m, 'XWEM');
+         End
+
+         // Bookmark: Creatures.Blood
+         // Oblivion stores blood art in two subrecords (NAM0 Blood Spray,
+         // NAM1 Blood Decal). FO3/FNV collapse this to a single CNAM
+         // Impact Dataset reference.
+  Else If (g_Tag = 'Creatures.Blood') Then
+         If wbIsOblivion Then
+           Begin
+             EvaluateByPath(e, m, 'NAM0');
+             EvaluateByPath(e, m, 'NAM1');
+           End
+         Else
+           EvaluateByPath(e, m, 'CNAM')
+
+         // Bookmark: Creatures.Type
+  Else If (g_Tag = 'Creatures.Type') Then
+         EvaluateByPath(e, m, 'DATA\Type')
+
+         // Bookmark: Deflst
+         // FLST FormIDs is a flat FormID array; identity key is entry's own edit value.
+  Else If (g_Tag = 'Deflst') Then
+         EvaluateListRemove(e, m, 'FormIDs', '')
+
+         // Bookmark: Destructible
+  Else If (g_Tag = 'Destructible') Then
+         Begin
+           // assign Destructable elements
+           x := ElementByName(e, 'Destructible');
+           y := ElementByName(m, 'Destructible');
+
+           If CompareAssignment(x, y) Then
+             Exit;
+
+           a := ElementBySignature(x, 'DEST');
+           b := ElementBySignature(y, 'DEST');
+
+           // evaluate Destructable properties
+           EvaluateByPath(a, b, 'Health');
+           EvaluateByPath(a, b, 'Count');
+           EvaluateByPath(x, y, 'Stages');
+
+           // assign Destructable flags
+           If Not wbIsSkyrim Then
+             Begin
+               j := ElementByName(a, 'Flags');
+               k := ElementByName(b, 'Flags');
+
+               If Assigned(j) Or Assigned(k) Then
+                 Begin
+                   // add tag if Destructable flags exist in one record
+                   If CompareAssignment(j, k) Then
+                     Exit;
+
+                   // evaluate Destructable flags
+                   If CompareKeys(j, k) Then
+                     Exit;
+                 End;
+             End;
+         End
+
+         // Bookmark: EffectStats
+  Else If (g_Tag = 'EffectStats') Then
+         Begin
+           If wbIsOblivion Or wbIsFallout3 Or wbIsFalloutNV Then
+             Begin
+               EvaluateByPath(e, m, 'DATA\Flags');
+
+               If Not wbIsFallout3 And Not wbIsFalloutNV Then
+                 EvaluateByPath(e, m, 'DATA\Base cost');
+
+               If Not wbIsOblivion Then
+                 EvaluateByPath(e, m, 'DATA\Associated Item');
+
+               If Not wbIsFallout3 And Not wbIsFalloutNV Then
+                 EvaluateByPath(e, m, 'DATA\Magic School');
+
+               EvaluateByPath(e, m, 'DATA\Resist Value');
+               EvaluateByPath(e, m, 'DATA\Projectile Speed');
+
+               If Not wbIsFallout3 And Not wbIsFalloutNV Then
+                 Begin
+                   EvaluateByPath(e, m, 'DATA\Constant Effect enchantment factor');
+                   EvaluateByPath(e, m, 'DATA\Constant Effect barter factor');
+                 End;
+
+               If wbIsOblivion And CompareFlags(e, m, 'DATA\Flags', 'Use actor value', False, False) Then
+                 EvaluateByPath(e, m, 'DATA\Assoc. Actor Value')
+               Else If wbIsFallout3 Or wbIsFalloutNV Then
+                      Begin
+                        EvaluateByPath(e, m, 'DATA\Archtype');
+                        EvaluateByPath(e, m, 'DATA\Actor Value');
+                      End;
+             End
+           Else If wbIsSkyrim Or wbIsFallout4 Then
+                  Begin
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Flags');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Base Cost');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Associated Item');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Magic Skill');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Resist Value');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Taper Weight');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Minimum Skill Level');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Spellmaking');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Taper Curve');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Taper Duration');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Second AV Weight');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Archtype');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Actor Value');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Casting Type');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Delivery');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Second Actor Value');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Skill Usage Multiplier');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Equip Ability');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Perk to Apply');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Script Effect AI');
+                  End;
+         End
+
+         // Bookmark: EnchantmentStats
+  Else If (g_Tag = 'EnchantmentStats') Then
+         Begin
+           If wbIsOblivion Or wbIsFallout3 Or wbIsFalloutNV Then
+             Begin
+               EvaluateByPath(e, m, 'ENIT\Type');
+               EvaluateByPath(e, m, 'ENIT\Charge Amount');
+               EvaluateByPath(e, m, 'ENIT\Enchant Cost');
+               EvaluateByPath(e, m, 'ENIT\Flags');
+             End
+           Else If wbIsSkyrim Or wbIsFallout4 Then
+                  EvaluateByPath(e, m, 'ENIT');
+         End
+
+         // Bookmark: Actors.Factions
+  Else If (g_Tag = 'Actors.Factions') Then
+         Begin
+           x := ElementByName(e, 'Factions');
+           y := ElementByName(m, 'Factions');
+
+           If CompareAssignment(x, y) Then
+             Exit;
+
+           If Not Assigned(x) Then
+             Exit;
+
+           If CompareKeys(x, y) Then
+             Exit;
+         End
+
+         // Bookmark: Enchantments (FO4 ARMO/EXPL, etc.)
+  Else If (g_Tag = 'Enchantments') Then
+         EvaluateByPath(e, m, 'Enchantment')
+
+         // Bookmark: Graphics
+  Else If (g_Tag = 'Graphics') Then
+         Begin
+           // evaluate Icon and Model properties
+           If ContainsStr('ALCH AMMO APPA BOOK HAIR INGR KEYM LIGH MGEF MISC SGST SLGM TREE WEAP', sSignature) Then
+             Begin
+               EvaluateByPath(e, m, 'Icon');
+               EvaluateByPath(e, m, 'Model');
+             End
+
+             // evaluate Icon properties
+           Else If ContainsStr('BSGN CLAS EYES LSCR LTEX QUST REGN SKIL', sSignature) Then
+                  EvaluateByPath(e, m, 'Icon')
+
+                  // evaluate Model properties
+           Else If ContainsStr('ACTI CONT DOOR FLOR FURN GRAS STAT', sSignature) Then
+                  EvaluateByPath(e, m, 'Model')
+
+                  // evaluate ARMO properties
+           Else If sSignature = 'ARMO' Then
+                  Begin
+                    If wbIsFallout4 Then
+                      Begin
+                        EvaluateByPath(e, m, 'Male\World Model');
+                        EvaluateByPath(e, m, 'Female\World Model');
+                        EvaluateByPath(e, m, 'Male\Icon Image');
+                        EvaluateByPath(e, m, 'Female\Icon Image');
+                        x := ElementByPath(e, 'BOD2\First Person Flags');
+                        If Not Assigned(x) Then
+                          Exit;
+
+                        y := ElementByPath(m, 'BOD2\First Person Flags');
+
+                        If CompareKeys(x, y) Then
+                          Exit;
+                      End
+                    Else
+                      Begin
+                        // Shared (TES4 / FO3 / FNV / TES5)
+                        EvaluateByPath(e, m, 'Male world model');
+                        EvaluateByPath(e, m, 'Female world model');
+
+                        // ARMO - Oblivion
+                        If wbIsOblivion Then
+                      Begin
+                        // evaluate Icon properties
+                        EvaluateByPath(e, m, 'Icon');
+                        EvaluateByPath(e, m, 'Icon 2 (female)');
+
+                        // assign First Person Flags elements
+                        x := ElementByPath(e, 'BODT\First Person Flags');
+                        If Not Assigned(x) Then
+                          Exit;
+
+                        y := ElementByPath(m, 'BODT\First Person Flags');
+
+                        // evaluate First Person Flags
+                        If CompareKeys(x, y) Then
+                          Exit;
+
+                        // assign General Flags elements
+                        x := ElementByPath(e, 'BODT\General Flags');
+                        If Not Assigned(x) Then
+                          Exit;
+
+                        y := ElementByPath(m, 'BODT\General Flags');
+
+                        // evaluate General Flags
+                        If CompareKeys(x, y) Then
+                          Exit;
+                      End
+
+                      // ARMO - FO3, FNV
+                    Else If wbIsFallout3 Or wbIsFalloutNV Then
+                           Begin
+                             // evaluate Icon properties
+                             EvaluateByPath(e, m, 'ICON');
+                             EvaluateByPath(e, m, 'ICO2');
+
+                             // assign First Person Flags elements
+                             x := ElementByPath(e, 'BMDT\Biped Flags');
+                             If Not Assigned(x) Then
+                               Exit;
+
+                             y := ElementByPath(m, 'BMDT\Biped Flags');
+
+                             // evaluate First Person Flags
+                             If CompareKeys(x, y) Then
+                               Exit;
+
+                             // assign General Flags elements
+                             x := ElementByPath(e, 'BMDT\General Flags');
+                             If Not Assigned(x) Then
+                               Exit;
+
+                             y := ElementByPath(m, 'BMDT\General Flags');
+
+                             // evaluate General Flags
+                             If CompareKeys(x, y) Then
+                               Exit;
+                           End
+
+                           // ARMO - TES5
+                    Else If wbIsSkyrim Then
+                           Begin
+                             // evaluate Icon properties
+                             EvaluateByPath(e, m, 'Icon');
+                             EvaluateByPath(e, m, 'Icon 2 (female)');
+
+                             // evaluate Biped Model properties
+                             EvaluateByPath(e, m, 'Male world model');
+                             EvaluateByPath(e, m, 'Female world model');
+
+                             // assign First Person Flags elements
+                             x  := ElementByPath(e, 'BOD2\First Person Flags');
+                             If Not Assigned(x) Then
+                               Exit;
+
+                             y := ElementByPath(m, 'BOD2\First Person Flags');
+
+                             // evaluate First Person Flags
+                             If CompareKeys(x, y) Then
+                               Exit;
+
+                             // assign General Flags elements
+                             x := ElementByPath(e, 'BOD2\General Flags');
+                             If Not Assigned(x) Then
+                               Exit;
+
+                             y := ElementByPath(m, 'BOD2\General Flags');
+
+                             // evaluate General Flags
+                             If CompareKeys(x, y) Then
+                               Exit;
+                           End;
+                      End;
+                  End
+
+                  // evaluate CREA properties
+           Else If sSignature = 'CREA' Then
+                  Begin
+                    EvaluateByPath(e, m, 'NIFZ');
+                    EvaluateByPath(e, m, 'NIFT');
+                  End
+
+                  // evaluate EFSH properties
+           Else If sSignature = 'EFSH' Then
+                  Begin
+                    // evaluate Record Flags
+                    x := ElementByPath(e, 'Record Header\Record Flags');
+                    y := ElementByPath(m, 'Record Header\Record Flags');
+
+                    If CompareKeys(x, y) Then
+                      Exit;
+
+                    // evaluate Icon properties
+                    EvaluateByPath(e, m, 'ICON');
+                    EvaluateByPath(e, m, 'ICO2');
+
+                    // evaluate other properties
+                    EvaluateByPath(e, m, 'NAM7');
+
+                    If wbIsSkyrim Then
+                      Begin
+                        EvaluateByPath(e, m, 'NAM8');
+                        EvaluateByPath(e, m, 'NAM9');
+                      End;
+
+                    EvaluateByPath(e, m, 'DATA');
+                  End
+
+                  // evaluate MGEF properties (TES5 + FO4: shader / art fields)
+           Else If (wbIsSkyrim Or wbIsFallout4) And (sSignature = 'MGEF') Then
+                  Begin
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Casting Light');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Hit Shader');
+                    EvaluateByPath(e, m, 'Magic Effect Data\DATA\Enchant Shader');
+                  End
+
+                  // evaluate Material property
+           Else If sSignature = 'STAT' Then
+                  EvaluateByPath(e, m, 'DNAM\Material');
+         End
+
+         // Bookmark: Invent.Add
+         // CNTO Items[*]\CNTO\Item holds the item FormID (separate from Count).
+  Else If (g_Tag = 'Invent.Add') Then
+         EvaluateListAdd(e, m, 'Items', 'CNTO\Item')
+
+         // Bookmark: Invent.Change
+         // Match entries on CNTO\Item; only fire if a shared item's count or extra data
+         // (COED — owner/condition/health, FO3+ only) differs. Pure adds/removes are
+         // handled by Invent.Add/Invent.Remove and must not pollute Invent.Change.
+  Else If (g_Tag = 'Invent.Change') Then
+         If wbIsOblivion Then
+           DiffSubrecordList(e, m, 'Invent.Change', 'Items', 'CNTO\Item', 'CNTO\Count')
+         Else
+           DiffSubrecordList(e, m, 'Invent.Change', 'Items', 'CNTO\Item', 'CNTO\Count|COED')
+
+         // Bookmark: Invent.Remove
+  Else If (g_Tag = 'Invent.Remove') Then
+         EvaluateListRemove(e, m, 'Items', 'CNTO\Item')
+
+         // Bookmark: Keywords
+  Else If (g_Tag = 'Keywords') Then
+         Begin
+           x := ElementBySignature(e, 'KWDA');
+           y := ElementBySignature(m, 'KWDA');
+
+           If CompareAssignment(x, y) Then
+             Exit;
+
+           If CompareElementCount(x, y) Then
+             Exit;
+
+           x := ElementBySignature(e, 'KSIZ');
+           y := ElementBySignature(m, 'KSIZ');
+
+           If CompareAssignment(x, y) Then
+             Exit;
+
+           If CompareEditValue(x, y) Then
+             Exit;
+         End
+
+         // Bookmark: NPC.AIPackageOverrides
+  Else If (g_Tag = 'NPC.AIPackageOverrides') Then
+         Begin
+           If wbIsSkyrim Then
+             Begin
+               EvaluateByPath(e, m, 'SPOR');
+               EvaluateByPath(e, m, 'OCOR');
+               EvaluateByPath(e, m, 'GWOR');
+               EvaluateByPath(e, m, 'ECOR');
+             End;
+         End
+
+         // Bookmark: NPC.AttackRace
+  Else If (g_Tag = 'NPC.AttackRace') Then
+         EvaluateByPath(e, m, 'ATKR')
+
+         // Bookmark: NPC.Class
+  Else If (g_Tag = 'NPC.Class') Then
+         EvaluateByPath(e, m, 'CNAM')
+
+         // Bookmark: NPC.CrimeFaction
+  Else If (g_Tag = 'NPC.CrimeFaction') Then
+         EvaluateByPath(e, m, 'CRIF')
+
+         // Bookmark: NPC.DefaultOutfit
+  Else If (g_Tag = 'NPC.DefaultOutfit') Then
+         EvaluateByPath(e, m, 'DOFT')
+
+         // Bookmark: NPC.Eyes
+  Else If (g_Tag = 'NPC.Eyes') Then
+         EvaluateByPath(e, m, 'ENAM')
+
+         // Bookmark: NPC.FaceGen
+  Else If (g_Tag = 'NPC.FaceGen') Then
+         EvaluateByPath(e, m, 'FaceGen Data')
+
+         // Bookmark: NPC.Hair
+  Else If (g_Tag = 'NPC.Hair') Then
+         EvaluateByPath(e, m, 'HNAM')
+
+         // Bookmark: NPC.Race
+  Else If (g_Tag = 'NPC.Race') Then
+         EvaluateByPath(e, m, 'RNAM')
+
+         // Bookmark: ObjectBounds
+  Else If (g_Tag = 'ObjectBounds') Then
+         EvaluateByPath(e, m, 'OBND')
+
+         // Bookmark: Outfits.Add
+         // OTFT records expose a single child array element 'Items' (signature INAM).
+         // Pass the 'INAM' signature rather than the 'Items' name: OTFT's items
+         // array is wbArrayS(INAM, 'Items', ...) at the top level of the record,
+         // and ElementByPath(rec, 'Items') can return nil on wbArrayS-with-signature
+         // arrays on some xEdit builds. ResolveListArray falls back to
+         // ElementBySignature, which is stable. Identity key is the FormID itself.
+         // Element-count-only would miss e.g. MQ101StormcloakPrisonerOutfit swapping
+         // a static ARMO for an LVLI at the same count.
+  Else If (g_Tag = 'Outfits.Add') Then
+         EvaluateListAdd(e, m, 'INAM', '')
+
+         // Bookmark: Outfits.Remove
+  Else If (g_Tag = 'Outfits.Remove') Then
+         EvaluateListRemove(e, m, 'INAM', '')
+
+         // Bookmark: R.AddSpells / R.ChangeSpells handled by ProcessRaceSpells (list-diff split)
+
+         // Bookmark: R.Attributes-F
+  Else If (g_Tag = 'R.Attributes-F') Then
+         EvaluateByPath(e, m, 'ATTR\Female')
+
+         // Bookmark: R.Attributes-M
+  Else If (g_Tag = 'R.Attributes-M') Then
+         EvaluateByPath(e, m, 'ATTR\Male')
+
+         // Bookmark: R.Body-F
+  Else If (g_Tag = 'R.Body-F') Then
+         EvaluateByPath(e, m, 'Body Data\Female Body Data\Parts')
+
+         // Bookmark: R.Body-M
+  Else If (g_Tag = 'R.Body-M') Then
+         EvaluateByPath(e, m, 'Body Data\Male Body Data\Parts')
+
+         // Bookmark: R.Body-Size-F
+  Else If (g_Tag = 'R.Body-Size-F') Then
+         Begin
+           EvaluateByPath(e, m, 'DATA\Female Height');
+           EvaluateByPath(e, m, 'DATA\Female Weight');
+         End
+
+         // Bookmark: R.Body-Size-M
+  Else If (g_Tag = 'R.Body-Size-M') Then
+         Begin
+           EvaluateByPath(e, m, 'DATA\Male Height');
+           EvaluateByPath(e, m, 'DATA\Male Weight');
+         End
+
+         // Bookmark: R.ChangeSpells
+         // Normally reached via ProcessRaceSpells (which handles the Add/Change split itself);
+         // this handler is defensive in case ProcessTag('R.ChangeSpells', ...) is called directly.
+  Else If (g_Tag = 'R.ChangeSpells') Then
+         EvaluateByPath(e, m, ActorSpellArrayPath)
+
+         // Bookmark: R.Description
+  Else If (g_Tag = 'R.Description') Then
+         EvaluateByPath(e, m, 'DESC')
+
+         // Bookmark: R.Ears
+  Else If (g_Tag = 'R.Ears') Then
+         Begin
+           EvaluateByPath(e, m, 'Head Data\Male Head Data\Parts\[1]');
+           EvaluateByPath(e, m, 'Head Data\Female Head Data\Parts\[1]');
+         End
+
+         // Bookmark: R.Eyes
+  Else If (g_Tag = 'R.Eyes') Then
+         EvaluateByPath(e, m, 'ENAM')
+
+         // Bookmark: R.Hair
+  Else If (g_Tag = 'R.Hair') Then
+         EvaluateByPath(e, m, 'HNAM')
+
+         // Bookmark: R.Head
+  Else If (g_Tag = 'R.Head') Then
+         Begin
+           EvaluateByPath(e, m, 'Head Data\Male Head Data\Parts\[0]');
+           EvaluateByPath(e, m, 'Head Data\Female Head Data\Parts\[0]');
+           EvaluateByPath(e, m, 'FaceGen Data');
+         End
+
+         // Bookmark: R.Mouth
+  Else If (g_Tag = 'R.Mouth') Then
+         Begin
+           EvaluateByPath(e, m, 'Head Data\Male Head Data\Parts\[2]');
+           EvaluateByPath(e, m, 'Head Data\Female Head Data\Parts\[2]');
+         End
+
+         // Bookmark: R.Relations.Add
+         // RACE Relations[*]\Faction holds the faction FormID (separate from modifier).
+  Else If (g_Tag = 'R.Relations.Add') Then
+         EvaluateListAdd(e, m, 'Relations', 'Faction')
+
+         // Bookmark: R.Relations.Change
+         // Match entries on Faction; only fire if a shared faction's Modifier
+         // (Oblivion) or Modifier + Group Combat Reaction (non-Oblivion) differs.
+         // Adds/removes go to R.Relations.Add / R.Relations.Remove.
+         // Skyrim/SSE dispatches R.Relations.* from ProcessRecord; FO4 has no
+         // RACE relations import here. Non-Oblivion branch handles all.
+  Else If (g_Tag = 'R.Relations.Change') Then
+         If wbIsOblivion Then
+           DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier')
+         Else
+           DiffSubrecordList(e, m, 'R.Relations.Change', 'Relations', 'Faction', 'Modifier|Group Combat Reaction')
+
+         // Bookmark: R.Relations.Remove
+  Else If (g_Tag = 'R.Relations.Remove') Then
+         EvaluateListRemove(e, m, 'Relations', 'Faction')
+
+         // Bookmark: R.Skills
+  Else If (g_Tag = 'R.Skills') Then
+         EvaluateByPath(e, m, 'DATA\Skill Boosts')
+
+         // Bookmark: R.Stats (TES5/SSE/Enderal — WB import_races_attrs DATA)
+  Else If (g_Tag = 'R.Stats') Then
+         If wbIsSkyrim And (sSignature = 'RACE') Then
+           Begin
+             EvaluateByPath(e, m, 'DATA\Starting Health');
+             EvaluateByPath(e, m, 'DATA\Starting Magicka');
+             EvaluateByPath(e, m, 'DATA\Starting Stamina');
+             EvaluateByPath(e, m, 'DATA\Base Carry Weight');
+             EvaluateByPath(e, m, 'DATA\Health Regen');
+             EvaluateByPath(e, m, 'DATA\Magicka Regen');
+             EvaluateByPath(e, m, 'DATA\Stamina Regen');
+             EvaluateByPath(e, m, 'DATA\Unarmed Damage');
+             EvaluateByPath(e, m, 'DATA\Unarmed Reach');
+           End
+
+         // Bookmark: R.Teeth
+  Else If (g_Tag = 'R.Teeth') Then
+         Begin
+           EvaluateByPath(e, m, 'Head Data\Male Head Data\Parts\[3]');
+           EvaluateByPath(e, m, 'Head Data\Female Head Data\Parts\[3]');
+
+           // FO3
+           If wbIsFallout3 Then
+             Begin
+               EvaluateByPath(e, m, 'Head Data\Male Head Data\Parts\[4]');
+               EvaluateByPath(e, m, 'Head Data\Female Head Data\Parts\[4]');
+             End;
+         End
+
+         // Bookmark: R.Voice-F
+  Else If (g_Tag = 'R.Voice-F') Then
+         EvaluateByPath(e, m, 'VTCK\Voice #1 (Female)')
+
+         // Bookmark: R.Voice-M
+  Else If (g_Tag = 'R.Voice-M') Then
+         EvaluateByPath(e, m, 'VTCK\Voice #0 (Male)')
+
+         // Bookmark: Relations.Add
+         // FACT Relations[*]\Faction holds the target faction FormID.
+  Else If (g_Tag = 'Relations.Add') Then
+         EvaluateListAdd(e, m, 'Relations', 'Faction')
+
+         // Bookmark: Relations.Change
+         // Match entries on Faction; only fire if a shared faction's Modifier
+         // (Oblivion) or Modifier + Group Combat Reaction (every other game)
+         // differs. Adds/removes go to Relations.Add / Relations.Remove.
+  Else If (g_Tag = 'Relations.Change') Then
+         If wbIsOblivion Then
+           DiffSubrecordList(e, m, 'Relations.Change', 'Relations', 'Faction', 'Modifier')
+         Else
+           DiffSubrecordList(e, m, 'Relations.Change', 'Relations', 'Faction', 'Modifier|Group Combat Reaction')
+
+         // Bookmark: Relations.Remove
+  Else If (g_Tag = 'Relations.Remove') Then
+         EvaluateListRemove(e, m, 'Relations', 'Faction')
+
+         // Bookmark: Roads
+  Else If (g_Tag = 'Roads') Then
+         EvaluateByPath(e, m, 'PGRP')
+
+         // Bookmark: Scripts
+  Else If (g_Tag = 'Scripts') Then
+         EvaluateByPath(e, m, 'SCRI')
+
+         // Bookmark: Sound
+  Else If (g_Tag = 'Sound') Then
+         Begin
+           // Activators, Containers, Doors, and Lights
+           If ContainsStr('ACTI CONT DOOR LIGH', sSignature) Then
+             Begin
+               EvaluateByPath(e, m, 'SNAM');
+
+               // Activators
+               If sSignature = 'ACTI' Then
+                 EvaluateByPath(e, m, 'VNAM')
+
+                 // Containers
+               Else If sSignature = 'CONT' Then
+                      Begin
+                        EvaluateByPath(e, m, 'QNAM');
+                        If Not wbIsSkyrim And Not wbIsFallout3 Then
+                          EvaluateByPath(e, m, 'RNAM');
+                        // FO3, TESV, and SSE don't have this element
+                      End
+
+                      // Doors
+               Else If sSignature = 'DOOR' Then
+                      Begin
+                        EvaluateByPath(e, m, 'ANAM');
+                        EvaluateByPath(e, m, 'BNAM');
+                      End;
+             End
+
+             // Creatures
+           Else If sSignature = 'CREA' Then
+                  Begin
+                    EvaluateByPath(e, m, 'WNAM');
+                    EvaluateByPath(e, m, 'CSCR');
+                    EvaluateByPath(e, m, 'Sound Types');
+                  End
+
+                  // Magic Effects
+           Else If sSignature = 'MGEF' Then
+                  Begin
+                    // TES5, SSE
+                    If wbIsSkyrim Then
+                      EvaluateByPath(e, m, 'SNDD')
+
+                      // FO3, FNV, TES4
+                    Else
+                      Begin
+                        EvaluateByPath(e, m, 'DATA\Effect sound');
+                        EvaluateByPath(e, m, 'DATA\Bolt sound');
+                        EvaluateByPath(e, m, 'DATA\Hit sound');
+                        EvaluateByPath(e, m, 'DATA\Area sound');
+                      End;
+                  End
+
+                  // Weather
+           Else If sSignature = 'WTHR' Then
+                  EvaluateByPath(e, m, 'Sounds');
+         End
+
+         // Bookmark: SpellStats
+  Else If (g_Tag = 'SpellStats') Then
+         EvaluateByPath(e, m, 'SPIT')
+
+         // Bookmark: Stats
+  Else If (g_Tag = 'Stats') Then
+         Begin
+           If ContainsStr('ALCH AMMO APPA ARMO BOOK CLOT INGR KEYM LIGH MISC SGST SLGM WEAP', sSignature) Then
+             Begin
+               EvaluateByPath(e, m, 'EDID');
+               EvaluateByPath(e, m, 'DATA');
+
+               If ContainsStr('ARMO WEAP', sSignature) Then
+                 EvaluateByPath(e, m, 'DNAM')
+
+               Else If sSignature = 'WEAP' Then
+                      EvaluateByPath(e, m, 'CRDT');
+             End
+
+           Else If sSignature = 'ARMA' Then
+                  EvaluateByPath(e, m, 'DNAM');
+         End
+
+         // Bookmark: Text
+  Else If (g_Tag = 'Text') Then
+         Begin
+           If ContainsStr('ALCH AMMO APPA ARMO AVIF BOOK BSGN CHAL CLAS IMOD LSCR MESG MGEF PERK SCRL SHOU SKIL SPEL TERM WEAP', sSignature) Then
+             EvaluateByPath(e, m, 'DESC')
+
+           Else If Not wbIsOblivion Then
+                  Begin
+                    If sSignature = 'BOOK' Then
+                      EvaluateByPath(e, m, 'CNAM')
+
+                    Else If sSignature = 'MGEF' Then
+                           EvaluateByPath(e, m, 'DNAM')
+
+                    Else If sSignature = 'NOTE' Then
+                           EvaluateByPath(e, m, 'TNAM');
+                  End;
+         End
+
+         // Bookmark: WeaponMods
+  Else If (g_Tag = 'WeaponMods') Then
+         EvaluateByPath(e, m, 'Weapon Mods');
+End;
+
+
+Procedure ProcessDelevRelevTags(ARecord: IwbMainRecord; AMaster: IwbMainRecord);
+
+Var
+  kEntries          : IwbElement;
+  kEntriesMaster    : IwbElement;
+  kEntry            : IwbElement;
+  kEntryMaster      : IwbElement;
+  kCOED             : IwbElement;
+  // extra data
+  kCOEDMaster       : IwbElement;
+  // extra data
+  sSignature        : string;
+  sEditValues       : string;
+  sMasterEditValues : string;
+  i                 : integer;
+  j                 : integer;
+  bDelevApplies     : boolean;
+Begin
+  // nothing to do if already tagged
+  If TagExists('Delev') And TagExists('Relev') Then
+    Exit;
+
+  // get Leveled List Entries
+  kEntries       := ElementByName(ARecord, 'Leveled List Entries');
+  kEntriesMaster := ElementByName(AMaster, 'Leveled List Entries');
+
+  If Not Assigned(kEntries) Then
+    Exit;
+
+  If Not Assigned(kEntriesMaster) Then
+    Exit;
+
+  // initalize count matched on reference entries
+  j := 0;
+
+  If Not TagExists('Relev') Then
+    Begin
+      g_Tag := 'Relev';
+
+      For i := 0 To Pred(ElementCount(kEntries)) Do
+        Begin
+          kEntry := ElementByIndex(kEntries, i);
+          kEntryMaster := SortedArrayElementByValue(kEntriesMaster, 'LVLO\Reference', GetElementEditValues(kEntry, 'LVLO\Reference'));
+
+          If Not Assigned(kEntryMaster) Then
+            Continue;
+
+          Inc(j);
+
+          If TagExists(g_Tag) Then
+            Continue;
+
+          If CompareNativeValues(kEntry, kEntryMaster, 'LVLO\Level') Then
+            Exit;
+
+          If CompareNativeValues(kEntry, kEntryMaster, 'LVLO\Count') Then
+            Exit;
+
+          If wbIsOblivion Then
+            Continue;
+
+          // Relev check for changed level, count, extra data
+          kCOED       := ElementBySignature(kEntry, 'COED');
+          kCOEDMaster := ElementBySignature(kEntryMaster, 'COED');
+
+          sEditValues       := EditValues(kCOED);
+          sMasterEditValues := EditValues(kCOEDMaster);
+
+          If Not SameText(sEditValues, sMasterEditValues) Then
+            Begin
+              AddLogEntry('Assigned', kCOED, kCOEDMaster);
+              slSuggestedTags.Add(g_Tag);
+              Exit;
+            End;
+        End;
+    End;
+
+  If Not TagExists('Delev') Then
+    Begin
+      g_Tag := 'Delev';
+
+      sSignature := Signature(ARecord);
+
+      // Per-signature game applicability for the Delev tag.
+      // LVLI: all supported games. LVLC: Oblivion/FO3/FNV. LVLN: non-Oblivion.
+      // LVSP: Oblivion/Skyrim/FO4. Anything else: not applicable.
+      If sSignature = 'LVLI' Then
+        bDelevApplies := True
+      Else If sSignature = 'LVLC' Then
+             bDelevApplies := wbIsOblivion Or wbIsFallout3 Or wbIsFalloutNV
+      Else If sSignature = 'LVLN' Then
+             bDelevApplies := Not wbIsOblivion
+      Else If sSignature = 'LVSP' Then
+             bDelevApplies := wbIsOblivion Or wbIsSkyrim Or wbIsFallout4
+      Else
+        bDelevApplies := False;
+
+      // Fires if this signature supports Delev in the current game AND the
+      // override's matched-entry count is strictly less than the master's
+      // (i.e., the override drops entries the master had).
+      If bDelevApplies And (j < ElementCount(kEntriesMaster)) Then
+        Begin
+          AddLogEntry('ElementCount', kEntries, kEntriesMaster);
+          slSuggestedTags.Add(g_Tag);
+          Exit;
+        End;
+    End;
+End;
+
+
+Function FriendlyRelationshipWhy(Const ATestName: String): String;
+Begin
+  If SameText(ATestName, 'Assigned') Then
+    Result := 'a subrecord is present on one side of the conflict but missing on the other'
+  Else If SameText(ATestName, 'ElementCount') Then
+         Result := 'the winning override has a different number of child elements than the master'
+  Else If SameText(ATestName, 'ElementCountAdd') Then
+         Result := 'the winning override adds child elements relative to the master'
+  Else If SameText(ATestName, 'ElementCountRemove') Then
+         Result := 'the winning override removes child elements relative to the master'
+  Else If SameText(ATestName, 'GetEditValue') Then
+         Result := 'the displayed field value differs from the master'
+  Else If SameText(ATestName, 'CompareKeys') Then
+         Result := 'sorted key contents differ from the master'
+  Else If SameText(ATestName, 'SubrecordChange') Then
+         Result := 'a list entry the master also has was modified (same reference, different data)'
+  Else If SameText(ATestName, 'CompareNativeValues') Then
+         Result := 'raw binary/native field values differ from the master'
+  Else If SameText(ATestName, 'CompareFlags:NOT') Then
+         Result := 'a flag value differs from the master'
+  Else If SameText(ATestName, 'CompareFlags:OR') Then
+         Result := 'a flag is set on the override or master (OR rule)'
+  Else If SameText(ATestName, 'RaceSpells:AddOnly') Then
+         Result := 'override Spells adds new SPELs and removes none (additive merge)'
+  Else If SameText(ATestName, 'RaceSpells:Removes') Then
+         Result := 'override Spells removes SPELs the master had (full override required)'
+  Else If SameText(ATestName, 'Heuristic:ForceAddSuperset') Then
+         Result := 'heuristic: override list is a strict superset of master (no removals); WB ForceAdd may apply'
+  Else If SameText(ATestName, 'Heuristic:FullFaceDiff') Then
+         Result := 'heuristic: NPC eyes, hair, and face geometry all differ from master; WB full face import may apply'
+  Else
+    Result := 'detection rule fired (' + ATestName + ')';
+End;
+
+
+// Collect the EditValue (FormID hex) of each child entry in an array element into sl (sorted, unique).
+Procedure CollectArrayEntryIDs(AArray: IwbElement; sl: TStringList);
+
+Var 
+  i      : integer;
+  kEntry : IwbElement;
+  s      : string;
+Begin
+  If Not Assigned(AArray) Then
+    Exit;
+  For i := 0 To Pred(ElementCount(AArray)) Do
+    Begin
+      kEntry := ElementByIndex(AArray, i);
+      s := Trim(GetEditValue(kEntry));
+      If s <> '' Then
+        sl.Add(s);
+    End;
+End;
+
+
+// Set diff: items in A not in B
+Function CountSetMinus(A: TStringList; B: TStringList): integer;
+
+Var 
+  i, n : integer;
+Begin
+  n := 0;
+  For i := 0 To Pred(A.Count) Do
+    If B.IndexOf(A[i]) = -1 Then
+      Inc(n);
+  Result := n;
+End;
+
+
+// Oblivion RACE Spells split (replaces single R.ChangeSpells emission).
+//   removes > 0  -> R.ChangeSpells  (full override needed to drop SPELs)
+//   adds-only    -> R.AddSpells     (additive merge sufficient)
+//   identical    -> nothing
+// Preserves v1.0 detection coverage; improves accuracy in the adds-only case.
+Procedure ProcessRaceSpells(ARecord: IwbMainRecord; AMaster: IwbMainRecord);
+
+Var 
+  kSpells, kSpellsMaster : IwbElement;
+  slOver, slMast         : TStringList;
+  iAdds, iRemoves        : integer;
+Begin
+  If TagExists('R.AddSpells') And TagExists('R.ChangeSpells') Then
+    Exit;
+
+  kSpells       := ElementByPath(ARecord, ActorSpellArrayPath);
+  kSpellsMaster := ElementByPath(AMaster,  ActorSpellArrayPath);
+
+  // Both missing: nothing to suggest. Either-side missing: defer to general path-based check below.
+  If Not Assigned(kSpells) And Not Assigned(kSpellsMaster) Then
+    Exit;
+
+  slOver := MakeTagSet;
+  slMast := MakeTagSet;
+  Try
+    CollectArrayEntryIDs(kSpells,       slOver);
+    CollectArrayEntryIDs(kSpellsMaster, slMast);
+
+    iAdds    := CountSetMinus(slOver, slMast);
+    iRemoves := CountSetMinus(slMast, slOver);
+
+    If iRemoves > 0 Then
+      Begin
+        g_Tag := 'R.ChangeSpells';
+        If Not TagExists(g_Tag) Then
+          Begin
+            AddLogEntry('RaceSpells:Removes', kSpells, kSpellsMaster);
+            slSuggestedTags.Add(g_Tag);
+          End;
+      End
+    Else If iAdds > 0 Then
+           Begin
+             g_Tag := 'R.AddSpells';
+             If Not TagExists(g_Tag) Then
+               Begin
+                 AddLogEntry('RaceSpells:AddOnly', kSpells, kSpellsMaster);
+                 slSuggestedTags.Add(g_Tag);
+               End;
+           End;
+  Finally
+    slOver.Free;
+    slMast.Free;
+  End;
+End;
+
+
+// Per-entry change diff for sorted/keyed sub-record lists (Items, Relations, etc.).
+// Emits ATagName iff at least one entry whose key (ARefPath) is present in BOTH master
+// and override has differing data on any of ADataPathsDelim (pipe-separated paths).
+//
+// Entries that exist only in override (Add) or only in master (Remove) are intentionally
+// ignored here — those are handled by *.Add and *.Remove tags. This is the fix for the
+// historical false positive where CompareKeys on the whole array would fire whenever
+// items were added or removed, regardless of whether any shared entry actually changed.
+Procedure DiffSubrecordList(ARec: IInterface; AMaster: IInterface;
+                             Const ATagName: String; Const AArrayName: String;
+                             Const ARefPath: String; Const ADataPathsDelim: String);
+
+Var 
+  kArr, kArrM         : IwbElement;
+  kEntry, kMatch      : IwbElement;
+  kSubA, kSubB        : IwbElement;
+  slDataPaths         : TStringList;
+  i, j, k             : integer;
+  sRef, sRefM         : string;
+  sData, sDataM       : string;
+Begin
+  If TagExists(ATagName) Then
+    Exit;
+
+  kArr  := ElementByName(ARec,    AArrayName);
+  kArrM := ElementByName(AMaster, AArrayName);
+  If Not Assigned(kArr) Or Not Assigned(kArrM) Then
+    Exit;
+  If (ElementCount(kArr) = 0) Or (ElementCount(kArrM) = 0) Then
+    Exit;
+
+  slDataPaths := TStringList.Create;
+  Try
+    slDataPaths.Delimiter     := '|';
+    slDataPaths.StrictDelimiter := True;
+    slDataPaths.DelimitedText := ADataPathsDelim;
+
+    For i := 0 To Pred(ElementCount(kArr)) Do
+      Begin
+        kEntry := ElementByIndex(kArr, i);
+        sRef   := GetElementEditValues(kEntry, ARefPath);
+        If sRef = '' Then
+          Continue;
+
+        // Find the matching entry in master by ref (linear scan; lists are small).
+        kMatch := Nil;
+        For j := 0 To Pred(ElementCount(kArrM)) Do
+          Begin
+            sRefM := GetElementEditValues(ElementByIndex(kArrM, j), ARefPath);
+            If SameText(sRefM, sRef) Then
+              Begin
+                kMatch := ElementByIndex(kArrM, j);
+                Break;
+              End;
+          End;
+
+        // Ref only in override = Add (handled by *.Add tag); skip.
+        If Not Assigned(kMatch) Then
+          Continue;
+
+        // Compare each requested data path. First difference wins and emits the tag.
+        For k := 0 To Pred(slDataPaths.Count) Do
+          Begin
+            kSubA := ElementByPath(kEntry, slDataPaths[k]);
+            kSubB := ElementByPath(kMatch, slDataPaths[k]);
+
+            // Both missing on this path: nothing to compare.
+            If Not Assigned(kSubA) And Not Assigned(kSubB) Then
+              Continue;
+
+            sData  := '';
+            sDataM := '';
+            If Assigned(kSubA) Then sData  := EditValues(kSubA);
+            If Assigned(kSubB) Then sDataM := EditValues(kSubB);
+
+            If Not SameText(sData, sDataM) Then
+              Begin
+                g_Tag := ATagName;
+                AddLogEntry('SubrecordChange', kEntry, kMatch);
+                slSuggestedTags.Add(g_Tag);
+                Exit;
+              End;
+          End;
+      End;
+  Finally
+    slDataPaths.Free;
+  End;
+End;
+
+
+// Opt-in heuristic: suggest WB Force* variants when simple diff patterns fire.
+// Documented false positives; gated by g_HeuristicForceTags.
+Procedure ProcessForceTagHeuristics(ARecord: IwbMainRecord; AMaster: IwbMainRecord);
+
+Var 
+  sSig                       : string;
+  kArr, kArrMaster           : IwbElement;
+  slOver, slMast             : TStringList;
+  iAdds, iRemoves            : integer;
+  bSpells, bAI               : boolean;
+  bEyes, bHair, bFace        : boolean;
+  kE, kEM, kH, kHM, kF, kFM  : IwbElement;
+Begin
+  If Not g_HeuristicForceTags Then
+    Exit;
+
+  sSig := Signature(ARecord);
+
+  // Actors.SpellsForceAdd: superset on the SPLO array, only if Actors.Spells already suggested.
+  bSpells := (sSig = 'CREA') Or (sSig = 'NPC_');
+  If bSpells And TagExists('Actors.Spells') And Not TagExists('Actors.SpellsForceAdd') Then
+    Begin
+      kArr       := ElementByPath(ARecord, ActorSpellArrayPath);
+      kArrMaster := ElementByPath(AMaster,  ActorSpellArrayPath);
+
+      slOver := MakeTagSet;
+      slMast := MakeTagSet;
+      Try
+        CollectArrayEntryIDs(kArr,       slOver);
+        CollectArrayEntryIDs(kArrMaster, slMast);
+        iAdds    := CountSetMinus(slOver, slMast);
+        iRemoves := CountSetMinus(slMast, slOver);
+        If (iAdds > 0) And (iRemoves = 0) Then
+          Begin
+            g_Tag := 'Actors.SpellsForceAdd';
+            AddLogEntry('Heuristic:ForceAddSuperset', kArr, kArrMaster);
+            slSuggestedTags.Add(g_Tag);
+          End;
+      Finally
+        slOver.Free;
+        slMast.Free;
+      End;
+    End;
+
+  // Actors.AIPackagesForceAdd: superset on Packages, only if Actors.AIPackages already suggested.
+  bAI := (sSig = 'CREA') Or (sSig = 'NPC_');
+  If bAI And TagExists('Actors.AIPackages') And Not TagExists('Actors.AIPackagesForceAdd') Then
+    Begin
+      kArr       := ElementByPath(ARecord, 'Packages');
+      kArrMaster := ElementByPath(AMaster,  'Packages');
+
+      slOver := MakeTagSet;
+      slMast := MakeTagSet;
+      Try
+        CollectArrayEntryIDs(kArr,       slOver);
+        CollectArrayEntryIDs(kArrMaster, slMast);
+        iAdds    := CountSetMinus(slOver, slMast);
+        iRemoves := CountSetMinus(slMast, slOver);
+        If (iAdds > 0) And (iRemoves = 0) Then
+          Begin
+            g_Tag := 'Actors.AIPackagesForceAdd';
+            AddLogEntry('Heuristic:ForceAddSuperset', kArr, kArrMaster);
+            slSuggestedTags.Add(g_Tag);
+          End;
+      Finally
+        slOver.Free;
+        slMast.Free;
+      End;
+    End;
+
+  // NpcFacesForceFullImport: NPC_ on non-FO4, all of eyes (ENAM), hair (HNAM),
+  // and face geometry (FaceGen Data) differ from master simultaneously.
+  If (sSig = 'NPC_') And Not wbIsFallout4 And Not TagExists('NpcFacesForceFullImport') Then
+    Begin
+      kE  := ElementBySignature(ARecord, 'ENAM');
+      kEM := ElementBySignature(AMaster, 'ENAM');
+      kH  := ElementBySignature(ARecord, 'HNAM');
+      kHM := ElementBySignature(AMaster, 'HNAM');
+      kF  := ElementByPath(ARecord, 'FaceGen Data');
+      kFM := ElementByPath(AMaster,  'FaceGen Data');
+
+      bEyes := Assigned(kE) And Assigned(kEM) And (GetNativeValue(kE) <> GetNativeValue(kEM));
+      bHair := Assigned(kH) And Assigned(kHM) And (GetNativeValue(kH) <> GetNativeValue(kHM));
+      bFace := Assigned(kF) And Assigned(kFM) And Not SameText(EditValues(kF), EditValues(kFM));
+
+      If bEyes And bHair And bFace Then
+        Begin
+          g_Tag := 'NpcFacesForceFullImport';
+          AddLogEntry('Heuristic:FullFaceDiff', kF, kFM);
+          slSuggestedTags.Add(g_Tag);
+        End;
+    End;
+End;
+
+
+Function AddLogEntry(ATestName: String; AElement: IwbElement; AMaster: IwbElement): string;
+
+Var 
+  mr    : IwbMainRecord;
+  sName : string;
+  sPath : string;
+  sWhy  : string;
+Begin
+  If Not g_LogTests And Not g_ShowTagRelationships Then
+    Exit;
+
+  If Assigned(AMaster) Then
+    Begin
+      mr    := ContainingMainRecord(AMaster);
+      sPath := Path(AMaster);
+    End
+  Else
+    Begin
+      mr    := ContainingMainRecord(AElement);
+      sPath := Path(AElement);
+    End;
+
+  // Path() returns strings shaped like '[NN] <rest of path>'. The fixed 5-char
+  // prefix ('[NN] ' — two-digit index, two brackets, trailing space) is strip-
+  // ped so log lines show just the meaningful path suffix.
+  sPath := RightStr(sPath, Length(sPath) - 5);
+
+  sName := Format('[%s:%s]', [Signature(mr), IntToHex(GetLoadOrderFormID(mr), 8)]);
+
+  If g_LogTests Then
+    slLog.Add(Format('{%s} (%s) %s %s', [g_Tag, ATestName, sName, sPath]));
+
+  If g_ShowTagRelationships Then
+    Begin
+      sWhy := FriendlyRelationshipWhy(ATestName);
+      slTagRelationships.Add(Format('Tag suggestion %s based on %s at %s %s', [g_Tag, sWhy, sName, sPath]));
+    End;
+End;
+
+
+Procedure EscKeyHandler(Sender: TObject; Var Key: Word; Shift: TShiftState);
+Begin
+  If Key = 27 Then
+    Sender.Close;
+End;
+
+
+Procedure chkAddTagsClick(Sender: TObject);
+Begin
+  g_AddTags := Sender.Checked;
+End;
+
+Procedure chkAddFileClick(Sender: TObject);
+Begin
+  g_AddFile := Sender.Checked;
+End;
+
+
+Procedure chkLoggingClick(Sender: TObject);
+Begin
+  g_LogTests := Sender.Checked;
+End;
+
+
+Procedure chkTagRelationshipsClick(Sender: TObject);
+Begin
+  g_ShowTagRelationships := Sender.Checked;
+End;
+
+
+Procedure chkHeuristicForceTagsClick(Sender: TObject);
+Begin
+  g_HeuristicForceTags := Sender.Checked;
+End;
+
+
+Function ShowPrompt(ACaption: String): integer;
+
+Var 
+  frm                : TForm;
+  chkAddTags         : TCheckBox;
+  chkAddFile         : TCheckBox;
+  chkLogging         : TCheckBox;
+  chkTagRelations    : TCheckBox;
+  chkHeuristicForce  : TCheckBox;
+  btnCancel          : TButton;
+  btnOk              : TButton;
+  i                  : integer;
+Begin
+  Result := mrCancel;
+
+  frm := TForm.Create(TForm(frmMain));
+
+  Try
+    frm.Caption      := ACaption;
+    frm.BorderStyle  := bsToolWindow;
+    frm.ClientWidth  := 360 * ScaleFactor;
+    frm.ClientHeight := 211 * ScaleFactor;
+    frm.Position     := poScreenCenter;
+    frm.KeyPreview   := True;
+    frm.OnKeyDown    := EscKeyHandler;
+
+    chkAddTags := TCheckBox.Create(frm);
+    chkAddTags.Parent   := frm;
+    chkAddTags.Left     := 16 * ScaleFactor;
+    chkAddTags.Top      := 16 * ScaleFactor;
+    chkAddTags.Width    := 185 * ScaleFactor;
+    chkAddTags.Height   := 16 * ScaleFactor;
+    chkAddTags.Caption  := 'Write suggested tags to header';
+    chkAddTags.Checked  := False;
+    g_AddTags := chkAddTags.Checked;
+    chkAddTags.OnClick  := chkAddTagsClick;
+    chkAddTags.TabOrder := 0;
+
+    chkAddFile := TCheckBox.Create(frm);
+    chkAddFile.Parent   := frm;
+    chkAddFile.Left     := 16 * ScaleFactor;
+    chkAddFile.Top      := 39 * ScaleFactor;
+    chkAddFile.Width    := 185 * ScaleFactor;
+    chkAddFile.Height   := 16 * ScaleFactor;
+    chkAddFile.Caption  := 'Write suggested tags to file';
+    chkAddFile.Checked  := False;
+    g_AddFile := chkAddFile.Checked;
+    chkAddFile.OnClick  := chkAddFileClick;
+    chkAddFile.TabOrder := 0;
+
+    chkLogging := TCheckBox.Create(frm);
+    chkLogging.Parent   := frm;
+    chkLogging.Left     := 16 * ScaleFactor;
+    chkLogging.Top      := 62 * ScaleFactor;
+    chkLogging.Width    := 185 * ScaleFactor;
+    chkLogging.Height   := 16 * ScaleFactor;
+    chkLogging.Caption  := 'Log test results to Messages tab';
+    chkLogging.Checked  := True;
+    g_LogTests := chkLogging.Checked;
+    chkLogging.OnClick  := chkLoggingClick;
+    chkLogging.TabOrder := 1;
+
+    chkTagRelations := TCheckBox.Create(frm);
+    chkTagRelations.Parent   := frm;
+    chkTagRelations.Left     := 16 * ScaleFactor;
+    chkTagRelations.Top      := 85 * ScaleFactor;
+    chkTagRelations.Width    := 210 * ScaleFactor;
+    chkTagRelations.Height   := 16 * ScaleFactor;
+    chkTagRelations.Caption  := 'Show Tag to Record Relationships';
+    chkTagRelations.Checked  := True;
+    g_ShowTagRelationships := chkTagRelations.Checked;
+    chkTagRelations.OnClick  := chkTagRelationshipsClick;
+    chkTagRelations.TabOrder := 2;
+
+    chkHeuristicForce := TCheckBox.Create(frm);
+    chkHeuristicForce.Parent   := frm;
+    chkHeuristicForce.Left     := 16 * ScaleFactor;
+    chkHeuristicForce.Top      := 108 * ScaleFactor;
+    chkHeuristicForce.Width    := 336 * ScaleFactor;
+    chkHeuristicForce.Height   := 16 * ScaleFactor;
+    chkHeuristicForce.Caption  := 'Suggest heuristic Force* tags (may produce false positives)';
+    chkHeuristicForce.Checked  := False;
+    g_HeuristicForceTags := chkHeuristicForce.Checked;
+    chkHeuristicForce.OnClick  := chkHeuristicForceTagsClick;
+    chkHeuristicForce.TabOrder := 3;
+
+    btnOk := TButton.Create(frm);
+    btnOk.Parent              := frm;
+    btnOk.Left                := 102 * ScaleFactor;
+    btnOk.Top                 := 173 * ScaleFactor;
+    btnOk.Width               := 75 * ScaleFactor;
+    btnOk.Height              := 25 * ScaleFactor;
+    btnOk.Caption             := 'Run';
+    btnOk.Default             := True;
+    btnOk.ModalResult         := mrOk;
+    btnOk.TabOrder            := 3;
+
+    btnCancel := TButton.Create(frm);
+    btnCancel.Parent          := frm;
+    btnCancel.Left            := 183 * ScaleFactor;
+    btnCancel.Top             := 173 * ScaleFactor;
+    btnCancel.Width           := 75 * ScaleFactor;
+    btnCancel.Height          := 25 * ScaleFactor;
+    btnCancel.Caption         := 'Abort';
+    btnCancel.ModalResult     := mrAbort;
+    btnCancel.TabOrder        := 4;
+
+    Result := frm.ShowModal;
+  Finally
+    frm.Free;
+  End;
+End;
+
+End.
