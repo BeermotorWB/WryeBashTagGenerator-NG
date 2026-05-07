@@ -95,6 +95,8 @@ Const
   DebugLevel       = DBG_PER_COMPARE;  // 1=per-tag, 2=per-compare, 3=leaf-diffs
   DebugFilterForm  = '';               // load-order FormID hex (e.g. '00013602'); '' = no filter
   DebugFilterTag   = '';               // exact tag name (e.g. 'Actors.Factions'); '' = no filter
+  // -----------------------------------------------------------------------
+  
 { chunk: Var block -- TStringLists, g_* booleans, single-file lock state, debug log state }
 
 Var 
@@ -1346,9 +1348,8 @@ Begin
           Exit;
         End
       Else
-          DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="%s" present on master', [i, sRef]));
-        End;
-    End;
+        DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="%s" present on master', [i, sRef]));
+      End;
   DbgLog(DBG_PER_COMPARE, '  -> NO-OP (all override entries match by key)');
 End;
 
@@ -1407,9 +1408,8 @@ Begin
           Exit;
         End
       Else
-          DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="%s" present on override', [i, sRef]));
-        End;
-    End;
+        DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="%s" present on override', [i, sRef]));
+      End;
 
   DbgLog(DBG_PER_COMPARE, '  -> NO-OP (all master entries match by key)');
 End;
@@ -2131,7 +2131,6 @@ Begin
                  Exit;
              End;
 
-           // evaluate additional property
            EvaluateByPath(e, m, 'XCCM');
          End
 
@@ -3014,7 +3013,6 @@ Begin
   // get master record if record is an override
   o := Master(e);
 
-
   If Not Assigned(o) Then
     Exit;
 
@@ -3546,7 +3544,7 @@ Begin
         ProcessDelevRelevTags(e, o);
     End;
 
-  // ObjectBounds — per-game signature whitelist.
+  // ObjectBounds
   g_Tag := 'ObjectBounds';
 
   If wbIsFallout3 And ContainsStr('ACTI ADDN ALCH AMMO ARMA ARMO ASPC BOOK COBJ CONT CREA DOOR EXPL FURN GRAS IDLM INGR KEYM LIGH LVLC LVLI LVLN MISC MSTT NOTE NPC_ PROJ PWAT SCOL SOUN STAT TACT TERM TREE TXST WEAP', sSignature) Then

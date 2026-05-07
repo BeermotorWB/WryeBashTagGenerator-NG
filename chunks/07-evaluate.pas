@@ -282,9 +282,9 @@ Begin
           Exit;
         End
       Else
-          DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="%s" present on master', [i, sRef]));
-        End;
+        DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="%s" present on master', [i, sRef]));
     End;
+    
   DbgLog(DBG_PER_COMPARE, '  -> NO-OP (all override entries match by key)');
 End;
 
@@ -344,7 +344,6 @@ Begin
         End
       Else
           DbgLog(DBG_LEAF_DIFFS, Format('       entry[%d] key="%s" present on override', [i, sRef]));
-        End;
     End;
 
   DbgLog(DBG_PER_COMPARE, '  -> NO-OP (all master entries match by key)');
